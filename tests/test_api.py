@@ -636,7 +636,7 @@ class PortApiTests(unittest.TestCase):
         self.assertIn("Coal stock availability", html)
         self.assertIn("Cumulative generation", html)
         self.assertIn("Sector-wise PLF", html)
-        self.assertIn("app.js?v=20260804-04", html)
+        self.assertIn("app.js?v=20260825-river-levels-04", html)
         self.assertIn("Cargo + tankers + type pending", html)
         self.assertIn('id="ais-watchlist" class="ais-watchlist" hidden', html)
         self.assertIn("positions in the background", html)

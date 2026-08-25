@@ -147,13 +147,19 @@ const state = {
   coastalWeatherHours: 0,
   coastalWeatherAnimated: true,
   coastalWeatherPolygonsVisible: false,
-  coastalWeatherParameters: new Set(["rain", "wind", "wave", "warning"]),
+  coastalWeatherParameters: new Set(["rain", "wind", "wave", "warning", "cyclone"]),
   coastalWeatherView: "map",
   coastalWeatherLocationType: "all",
   coastalWeatherQuery: "",
   coastalWeatherLoading: false,
   coastalWeatherPendingReload: false,
   weatherPortTierCache: new Map(),
+  riverLayer: null,
+  riverRows: [],
+  riverSources: [],
+  riverView: "map",
+  riverQuery: "",
+  riverLoading: false,
   coalAssets: [],
   coalSummary: null,
   coalAnalysis: null,
@@ -200,9 +206,11 @@ async function init() {
   state.routeLayer = L.layerGroup().addTo(state.map);
   state.weatherLayer = L.layerGroup();
   state.weatherSymbolLayer = L.layerGroup();
+  state.riverLayer = L.layerGroup();
   state.map.on("zoomend", () => {
     renderPorts();
     if (state.coastalWeatherEnabled) renderCoastalWeather();
+    if (state.mode === "rivers") renderRiverLevels();
   });
   loadAisPreferences();
   bindControls();
@@ -354,6 +362,24 @@ function bindControls() {
   document.getElementById("coastal-weather-refresh").addEventListener("click", () => {
     loadCoastalWeather(true);
   });
+  document.querySelectorAll("[data-river-view]").forEach(button => {
+    button.addEventListener("click", () => {
+      if (state.mode !== "rivers") activateMode("rivers");
+      setRiverView(button.dataset.riverView);
+    });
+  });
+  ["river-waterway-filter", "river-country-filter", "river-type-filter", "river-status-filter"].forEach(id => {
+    document.getElementById(id).addEventListener("change", () => {
+      renderRiverLevels();
+      renderRiverWorkspace();
+      updateRiverExportLink();
+    });
+  });
+  document.getElementById("river-workspace-search").addEventListener("input", event => {
+    state.riverQuery = event.target.value.trim().toLowerCase();
+    renderRiverWorkspace();
+  });
+  document.getElementById("river-level-refresh").addEventListener("click", () => loadRiverLevels(true));
   document.querySelectorAll("#coal-workspace-layers input, #coal-consumer-layers input").forEach(input => {
     input.addEventListener("change", renderCoalLayers);
   });
@@ -473,6 +499,11 @@ function activateMode(mode) {
   });
   const coalOnly = mode === "coal";
   const dataHubOnly = mode === "datahub";
+  const riverOnly = mode === "rivers";
+  if (!riverOnly && state.riverLayer && state.map.hasLayer(state.riverLayer)) {
+    state.map.removeLayer(state.riverLayer);
+  }
+  document.querySelector(".river-key-item").hidden = !riverOnly;
   [state.aisLayer, state.aisTrailLayer, state.routeLayer].forEach(layer => {
     if (layer && state.map.hasLayer(layer)) state.map.removeLayer(layer);
   });
@@ -491,6 +522,7 @@ function activateMode(mode) {
   const coalHeader = document.getElementById("coal-workspace-header");
   coalHeader.hidden = mode !== "coal";
   document.getElementById("weather-data-surface").hidden = true;
+  document.getElementById("river-data-surface").hidden = true;
   document.getElementById("datahub-surface").hidden = !dataHubOnly;
   if (mode === "coal") {
     document.getElementById("datahub-surface").hidden = true;
@@ -514,6 +546,14 @@ function activateMode(mode) {
     document.querySelector(".map-topbar").hidden = false;
     document.querySelector(".map-key").hidden = false;
     if (mode === "weather") setCoastalWeatherView(state.coastalWeatherView);
+    if (riverOnly) {
+      if (!state.map.hasLayer(state.riverLayer)) state.riverLayer.addTo(state.map);
+      setRiverView(state.riverView);
+      loadRiverLevels();
+      if (!state.riverRows.length) state.map.fitBounds([[-12, -100], [56, 18]], { padding: [20, 20] });
+    } else if (state.map.hasLayer(state.riverLayer)) {
+      state.map.removeLayer(state.riverLayer);
+    }
     setTimeout(() => state.map.invalidateSize(), 0);
   }
   renderPorts();
@@ -802,6 +842,240 @@ function renderDataHubPreviewTable() {
   container.innerHTML = `<table><thead><tr>${columns.map(column => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead><tbody>${payload.rows.slice(0, 20).map(row => `<tr>${columns.map(column => `<td>${escapeHtml(row[column] === null || row[column] === undefined ? "—" : String(row[column]))}</td>`).join("")}</tr>`).join("")}</tbody></table><small>Showing 20 of ${Number(payload.dataset.row_count).toLocaleString()} rows. Downloads contain the full normalized dataset.</small>`;
 }
 
+function setRiverView(view) {
+  if (!new Set(["map", "table", "cards"]).has(view)) view = "map";
+  state.riverView = view;
+  document.querySelectorAll("[data-river-view]").forEach(button => {
+    button.classList.toggle("active", button.dataset.riverView === view);
+  });
+  const surface = document.getElementById("river-data-surface");
+  const showSurface = state.mode === "rivers" && view !== "map";
+  surface.hidden = !showSurface;
+  if (state.mode === "rivers") {
+    document.getElementById("map").hidden = showSurface;
+    document.querySelector(".map-topbar").hidden = showSurface;
+    document.querySelector(".map-key").hidden = showSurface;
+  }
+  document.getElementById("river-workspace-table").hidden = view !== "table";
+  document.getElementById("river-workspace-cards").hidden = view !== "cards";
+  if (showSurface) renderRiverWorkspace();
+  else setTimeout(() => state.map.invalidateSize(), 0);
+}
+
+function riverConditionColor(status) {
+  return ({ below_normal: "#c47a16", normal: "#1976a3", above_normal: "#7d3c98", unavailable: "#677883" })[status] || "#677883";
+}
+
+function riverTimestamp(value) {
+  if (!value) return "Observation time unavailable";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short"
+  }).format(parsed);
+}
+
+function riverObservedTimestamp(row) {
+  if (row?.date_precision === "day" && row.observed_at) {
+    const date = String(row.observed_at).slice(0, 10);
+    const parsed = new Date(`${date}T12:00:00Z`);
+    if (!Number.isNaN(parsed.getTime())) {
+      return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" }).format(parsed);
+    }
+  }
+  return riverTimestamp(row?.observed_at);
+}
+
+function riverPercentileLabel(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "Not available";
+  const rounded = Math.round(Number(value));
+  const mod100 = rounded % 100;
+  const suffix = mod100 >= 11 && mod100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" })[rounded % 10] || "th";
+  return `${rounded}${suffix} percentile`;
+}
+
+function riverValue(value, unit) {
+  if (value === null || value === undefined || value === "") return "Not reported";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "Not reported";
+  return `${number.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${unit || ""}`.trim();
+}
+
+function filteredRiverRows() {
+  const waterway = document.getElementById("river-waterway-filter").value;
+  const country = document.getElementById("river-country-filter").value;
+  const type = document.getElementById("river-type-filter").value;
+  const status = document.getElementById("river-status-filter").value;
+  return state.riverRows.filter(row => {
+    const haystack = `${row.station || ""} ${row.waterbody || ""} ${row.basin || ""} ${row.country || ""}`.toLowerCase();
+    return (!waterway || row.waterbody === waterway)
+      && (!country || row.country === country)
+      && (!type || row.waterbody_type === type)
+      && (!status || row.comparison_status === status)
+      && (!state.riverQuery || haystack.includes(state.riverQuery));
+  });
+}
+
+async function loadRiverLevels(force = false) {
+  if (state.riverLoading) return;
+  state.riverLoading = true;
+  const status = document.getElementById("river-level-status");
+  const button = document.getElementById("river-level-refresh");
+  button.disabled = true;
+  status.textContent = force ? "Refreshing official gauges…" : "Loading official gauges…";
+  try {
+    const response = await fetch(`/api/river-levels${force ? "/refresh" : ""}`, { method: force ? "POST" : "GET" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || "River-level feed is unavailable");
+    state.riverRows = payload.rows || [];
+    state.riverSources = payload.sources || [];
+    populateRiverWaterways();
+    populateRiverCountries();
+    updateRiverExportLink();
+    renderRiverSources();
+    renderRiverLevels();
+    renderRiverWorkspace();
+    const connected = Number(payload.connected_source_count || 0);
+    const errors = (payload.errors || []).length;
+    status.textContent = `${state.riverRows.length} source-backed observations · ${connected} connected sources${errors ? ` · ${errors} source warning${errors === 1 ? "" : "s"}` : ""} · refreshed ${riverTimestamp(payload.fetched_at)}`;
+    document.getElementById("river-layer-count").textContent = `${state.riverRows.length} gauges`;
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    state.riverLoading = false;
+    button.disabled = false;
+  }
+}
+
+function populateRiverWaterways() {
+  const select = document.getElementById("river-waterway-filter");
+  const current = select.value;
+  const waterways = [...new Set(state.riverRows.map(row => row.waterbody).filter(Boolean))].sort();
+  select.innerHTML = `<option value="">All connected waterways</option>${waterways.map(value => `<option value="${escapeAttr(value)}">${escapeHtml(value)}</option>`).join("")}`;
+  if (waterways.includes(current)) select.value = current;
+}
+
+function populateRiverCountries() {
+  const select = document.getElementById("river-country-filter");
+  const current = select.value;
+  const countries = [...new Set(state.riverRows.map(row => row.country).filter(Boolean))].sort();
+  select.innerHTML = `<option value="">All connected countries</option>${countries.map(value => `<option value="${escapeAttr(value)}">${escapeHtml(value)}</option>`).join("")}`;
+  if (countries.includes(current)) select.value = current;
+}
+
+function updateRiverExportLink() {
+  const params = new URLSearchParams();
+  const mappings = [
+    ["river-waterway-filter", "waterway"], ["river-country-filter", "country"],
+    ["river-type-filter", "waterbody_type"], ["river-status-filter", "comparison_status"],
+  ];
+  mappings.forEach(([id, key]) => {
+    const value = document.getElementById(id)?.value;
+    if (value) params.set(key, value);
+  });
+  const link = document.getElementById("river-excel-download");
+  link.href = `/api/river-levels/export.xlsx${params.toString() ? `?${params}` : ""}`;
+}
+
+function riverComparisonLabel(row) {
+  return ({ below_normal: "Below normal", normal: "Within normal range", above_normal: "Above normal", unavailable: "Baseline unavailable" })[row.comparison_status] || "Baseline unavailable";
+}
+
+function renderRiverLevels() {
+  if (!state.riverLayer) return;
+  state.riverLayer.clearLayers();
+  if (state.mode !== "rivers") return;
+  const rows = filteredRiverRows();
+  rows.forEach(row => {
+    const lat = Number(row.latitude); const lon = Number(row.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const color = riverConditionColor(row.comparison_status);
+    const marker = L.circleMarker([lat, lon], {
+      radius: row.waterbody_type === "reservoir" ? 7 : 5.5,
+      color: "#fff", weight: 1.3, fillColor: color, fillOpacity: 0.95
+    });
+    marker.bindTooltip(`<strong>${escapeHtml(row.station)}</strong><br>${escapeHtml(row.waterbody)} · ${escapeHtml(row.country)}<br>Current ${escapeHtml(riverValue(row.level, row.level_unit))}<br>${escapeHtml(riverComparisonLabel(row))}`, { className: "weather-leaflet-tooltip", direction: "top" });
+    marker.on("click", () => showRiverLevelCard(row));
+    marker.addTo(state.riverLayer);
+  });
+  document.querySelector(".river-key-item").hidden = !rows.length;
+  document.getElementById("river-workspace-count").textContent = `${rows.length} gauge${rows.length === 1 ? "" : "s"}`;
+  setStatus(rows.length ? `${rows.length} river / reservoir gauges` : "No gauges match the selected filters");
+}
+
+function riverDetails(row) {
+  const details = [
+    ["Current level", riverValue(row.level, row.level_unit)],
+    ["Normal / reference", riverValue(row.normal_level, row.normal_unit || row.level_unit)],
+    ["Normal range", row.normal_low == null || row.normal_high == null ? "Not available from this feed" : `${riverValue(row.normal_low, row.normal_unit)} – ${riverValue(row.normal_high, row.normal_unit)}`],
+    ["Difference from normal", row.difference_from_normal == null ? "Not available" : `${row.difference_from_normal > 0 ? "+" : ""}${riverValue(row.difference_from_normal, row.normal_unit || row.level_unit)}`],
+    ["Percent from normal", row.percent_from_normal == null ? "Not available" : `${row.percent_from_normal > 0 ? "+" : ""}${Number(row.percent_from_normal).toLocaleString(undefined, { maximumFractionDigits: 1 })}%`],
+    ["24-hour change", row.change_24h == null ? "Not available" : `${row.change_24h > 0 ? "+" : ""}${riverValue(row.change_24h, row.change_unit)}`],
+    ["7-day change", row.change_7d == null ? "Not available" : `${row.change_7d > 0 ? "+" : ""}${riverValue(row.change_7d, row.change_unit)}`],
+    ["Historical percentile", riverPercentileLabel(row.historical_percentile)],
+    ["Recent min–max", row.recent_min == null || row.recent_max == null ? "Not available" : `${riverValue(row.recent_min, row.level_unit)} – ${riverValue(row.recent_max, row.level_unit)}`],
+    ["Trend", row.trend_value == null ? labelize(row.trend) : `${labelize(row.trend)} · ${row.trend_value > 0 ? "+" : ""}${row.trend_value} ${row.trend_unit || ""}`],
+  ];
+  Object.entries(row.extra_metrics || {}).forEach(([label, value]) => {
+    if (value != null && value !== "") details.push([label, value]);
+  });
+  return details;
+}
+
+function riverSparkline(row) {
+  const values = (row.history || []).map(item => Number(item.level)).filter(Number.isFinite).slice(-120);
+  if (values.length < 2) return `<div class="river-sparkline-empty">Recent series not available from this feed</div>`;
+  const width = 280; const height = 58;
+  const min = Math.min(...values); const max = Math.max(...values); const range = max - min || 1;
+  const points = values.map((value, index) => `${(index / (values.length - 1) * width).toFixed(1)},${(height - 4 - ((value - min) / range) * (height - 8)).toFixed(1)}`).join(" ");
+  return `<div class="river-sparkline"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-label="Recent water-level observations"><polyline points="${points}" /></svg><small>${escapeHtml(row.recent_window || `${values.length} recent observations`)}</small></div>`;
+}
+
+function showRiverLevelCard(row) {
+  const card = document.getElementById("port-card");
+  card.classList.remove("port-spec-card", "weather-detail-card");
+  card.classList.add("river-detail-card");
+  const details = riverDetails(row);
+  document.getElementById("port-card-content").innerHTML =
+    `<span class="detail-eyebrow">${escapeHtml(row.waterbody_type === "reservoir" ? "RESERVOIR LEVEL" : "RIVER GAUGE")}</span>` +
+    `<h2>${escapeHtml(row.station)}</h2>` +
+    `<p class="detail-meta">${escapeHtml(row.waterbody)} · ${escapeHtml(row.country)} · ${escapeHtml(riverObservedTimestamp(row))}</p>` +
+    `<div class="river-card-status" style="--river-status:${escapeAttr(riverConditionColor(row.comparison_status))}">${escapeHtml(riverComparisonLabel(row))}</div>` +
+    riverSparkline(row) +
+    `<div class="detail-grid river-detail-grid">${details.map(item => detailCell(item[0], item[1])).join("")}</div>` +
+    `<p class="weather-card-summary"><strong>Comparison basis:</strong> ${escapeHtml(row.normal_basis || "Not available from this official feed")}</p>` +
+    `<p class="weather-card-summary">${escapeHtml(row.quality_note || row.navigation_note || "Confirm the official source before operational use.")}</p>` +
+    (row.source_url ? `<a class="official-port-link weather-source-link" href="${escapeAttr(row.source_url)}" target="_blank" rel="noopener">Open official source</a>` : "") +
+    `<p class="detail-note">Source: ${escapeHtml(row.source_name)} · ${escapeHtml(row.source_method || "official publication")}. Gauge height is not channel depth or permissible draft.</p>`;
+  card.classList.add("open");
+  card.setAttribute("aria-hidden", "false");
+}
+
+function renderRiverWorkspace() {
+  const rows = filteredRiverRows();
+  document.getElementById("river-workspace-count").textContent = `${rows.length} gauge${rows.length === 1 ? "" : "s"}`;
+  const low = rows.filter(row => row.comparison_status === "below_normal").length;
+  const high = rows.filter(row => row.comparison_status === "above_normal").length;
+  const baseline = rows.filter(row => row.normal_level != null).length;
+  const countries = new Set(rows.map(row => row.country).filter(Boolean)).size;
+  document.getElementById("river-kpis").innerHTML = [
+    ["Visible gauges", rows.length], ["Below normal", low], ["Above normal", high], ["Baseline coverage", `${baseline} / ${rows.length}`], ["Countries", countries]
+  ].map(item => `<article><span>${escapeHtml(item[0])}</span><strong>${typeof item[1] === "number" ? Number(item[1]).toLocaleString() : escapeHtml(item[1])}</strong></article>`).join("");
+  const table = document.getElementById("river-workspace-table");
+  table.innerHTML = rows.length ? `<table><thead><tr><th>Waterway / station</th><th>Current</th><th>Normal</th><th>Normal range</th><th>Difference</th><th>24h / 7d</th><th>Comparison</th><th>Observed / source</th><th></th></tr></thead><tbody>${rows.map(row => `<tr class="river-status-${escapeAttr(row.comparison_status)}"><td><strong>${escapeHtml(row.waterbody)}</strong><small>${escapeHtml(row.station)} · ${escapeHtml(row.country)}</small></td><td>${escapeHtml(riverValue(row.level, row.level_unit))}</td><td>${escapeHtml(riverValue(row.normal_level, row.normal_unit || row.level_unit))}</td><td>${row.normal_low == null ? "—" : `${escapeHtml(riverValue(row.normal_low, row.normal_unit))}<small>to ${escapeHtml(riverValue(row.normal_high, row.normal_unit))}</small>`}</td><td>${row.difference_from_normal == null ? "—" : `${row.difference_from_normal > 0 ? "+" : ""}${escapeHtml(riverValue(row.difference_from_normal, row.normal_unit || row.level_unit))}<small>${row.percent_from_normal > 0 ? "+" : ""}${escapeHtml(String(row.percent_from_normal))}%</small>`}</td><td>${row.change_24h == null ? "—" : `${row.change_24h > 0 ? "+" : ""}${escapeHtml(riverValue(row.change_24h, row.change_unit))}`}<small>7d ${row.change_7d == null ? "—" : `${row.change_7d > 0 ? "+" : ""}${escapeHtml(riverValue(row.change_7d, row.change_unit))}`}</small></td><td><b>${escapeHtml(riverComparisonLabel(row))}</b></td><td>${escapeHtml(riverObservedTimestamp(row))}<small>${escapeHtml(row.source_name)}</small></td><td><button type="button" data-river-id="${escapeAttr(row.id)}">Details</button></td></tr>`).join("")}</tbody></table>` : `<div class="weather-empty-state">No gauges match these filters.</div>`;
+  const cards = document.getElementById("river-workspace-cards");
+  cards.innerHTML = rows.length ? rows.map(row => `<article class="river-workspace-card river-status-${escapeAttr(row.comparison_status)}"><header><div><span>${escapeHtml(row.waterbody_type)} · ${escapeHtml(row.country)}</span><h2>${escapeHtml(row.station)}</h2><p>${escapeHtml(row.waterbody)}</p></div><b>${escapeHtml(riverComparisonLabel(row))}</b></header><div class="river-level-hero"><div><small>Current level</small><strong>${escapeHtml(riverValue(row.level, row.level_unit))}</strong></div><span>Observed<br>${escapeHtml(riverObservedTimestamp(row))}</span></div>${riverSparkline(row)}<div class="weather-workspace-metrics">${riverDetails(row).slice(1, 9).map(item => `<div><span>${escapeHtml(item[0])}</span><strong>${escapeHtml(item[1])}</strong></div>`).join("")}</div><p><strong>Basis:</strong> ${escapeHtml(row.normal_basis || "Not available from this official feed")}</p><button type="button" data-river-id="${escapeAttr(row.id)}">Open gauge details</button></article>`).join("") : `<div class="weather-empty-state">No gauges match these filters.</div>`;
+  document.querySelectorAll("[data-river-id]").forEach(button => button.addEventListener("click", () => {
+    const row = state.riverRows.find(item => item.id === button.dataset.riverId);
+    if (row) showRiverLevelCard(row);
+  }));
+}
+
+function renderRiverSources() {
+  const container = document.getElementById("river-source-list");
+  container.innerHTML = state.riverSources.map(source => `<article class="river-source-card source-${escapeAttr(source.status)}"><header><strong>${escapeHtml(source.authority)}</strong><b>${escapeHtml(source.status.replaceAll("_", " "))}</b></header><span>${escapeHtml(source.region)} · ${escapeHtml(source.waterways)}</span><p>${escapeHtml(source.metrics)}</p><small>${escapeHtml(source.access)} · ${escapeHtml(source.frequency)}</small><a href="${escapeAttr(source.url)}" target="_blank" rel="noopener">Open official source</a></article>`).join("");
+}
+
 function setCoastalWeatherEnabled(enabled) {
   state.coastalWeatherEnabled = Boolean(enabled);
   const count = document.getElementById("weather-layer-count");
@@ -831,6 +1105,7 @@ function setCoastalWeatherEnabled(enabled) {
 
 function focusCoastalWeatherSource() {
   const views = {
+    cyclones: [[12, 145], 2],
     india: [[20, 79], 4], indonesia: [[-2.5, 118], 5],
     malaysia: [[4.2, 109], 5], thailand: [[11, 101], 5],
     philippines: [[12.5, 122], 5], singapore: [[1.28, 103.82], 9],
@@ -864,7 +1139,9 @@ function setCoastalWeatherView(view) {
 
 function updateCoastalWeatherDownload() {
   const source = state.coastalWeatherSource;
-  const href = source === "india"
+  const href = source === "cyclones"
+    ? "/api/weather/cyclones/export.csv"
+    : source === "india"
     ? "/api/imd/coastal-weather/export.csv"
     : source === "indonesia"
       ? "/api/bmkg/marine-weather/export.csv"
@@ -878,7 +1155,9 @@ function imdForecastDay() {
 
 async function requestCoastalWeather(provider, force) {
   let endpoint;
-  if (provider === "imd") {
+  if (provider === "cyclone") {
+    endpoint = `/api/weather/cyclones${force ? "/refresh" : ""}`;
+  } else if (provider === "imd") {
     endpoint = `/api/imd/coastal-weather${force ? "/refresh" : ""}?day=${imdForecastDay()}`;
   } else if (provider === "bmkg") {
     endpoint = `/api/bmkg/marine-weather${force ? "/refresh" : ""}?hours=${state.coastalWeatherHours}`;
@@ -898,13 +1177,14 @@ async function requestCoastalWeather(provider, force) {
 }
 
 function normalizeImdWeather(row) {
+  if (row.location_id && row.location_type) return row;
   return {
     ...row,
     provider_code: "imd",
     provider: "IMD",
     country: "India",
     location_type: "water",
-    location_id: `imd-${row.zone_id}`,
+    location_id: `imd-area-${row.zone_id}`,
     location_name: row.zone_name,
     valid_from: row.valid_date,
     weather_condition: row.rainfall_category,
@@ -930,13 +1210,15 @@ async function loadCoastalWeather(force = false) {
     ? "Refreshing official coastal forecasts…"
     : "Loading official coastal forecasts…";
   const providers = state.coastalWeatherSource === "all"
-    ? ["imd", "bmkg", "sea"]
+    ? ["cyclone", "imd", "bmkg", "sea"]
     : state.coastalWeatherSource === "both"
       ? ["imd", "bmkg"]
       : state.coastalWeatherSource === "india"
         ? ["imd"]
         : state.coastalWeatherSource === "indonesia"
           ? ["bmkg"]
+          : state.coastalWeatherSource === "cyclones"
+            ? ["cyclone"]
           : ["sea"];
   try {
     const results = await Promise.allSettled(
@@ -963,9 +1245,10 @@ async function loadCoastalWeather(force = false) {
     renderWeatherWorkspace();
     const visible = weatherVisibleRows();
     const portCount = visible.filter(row => row.location_type === "port").length;
-    const areaCount = visible.filter(row => row.location_type !== "port").length;
+    const stormCount = visible.filter(row => row.location_type === "storm").length;
+    const areaCount = visible.filter(row => row.location_type === "water").length;
     const latest = updated.length ? new Date(Math.max(...updated)).toLocaleString() : "time unavailable";
-    status.textContent = `${areaCount} forecast areas · ${portCount} port forecasts · updated ${latest}` +
+    status.textContent = `${stormCount} active cyclones · ${areaCount} forecast areas · ${portCount} port forecasts · updated ${latest}` +
       (errors.length ? ` · ${errors.join("; ")}` : "");
   } catch (error) {
     status.textContent = `Weather unavailable: ${error.message}`;
@@ -1017,6 +1300,7 @@ function weatherVisibleRows() {
   return state.coastalWeatherRows.filter(row => (
     (state.coastalWeatherLocationType === "all" || row.location_type === state.coastalWeatherLocationType)
   )).filter(row => (
+    (row.location_type === "storm" && params.has("cyclone")) ||
     (row.location_type === "port" && params.size > 0) ||
     (params.has("rain") && hasRainSignal(row)) ||
     (params.has("wind") && (
@@ -1100,7 +1384,7 @@ function coastalWeatherTooltip(row) {
     ? `<div><span>Current (source)</span><strong>${weatherRange(row.current_speed_min_source, row.current_speed_max_source, "")}</strong></div>`
     : "";
   const visibility = state.coastalWeatherParameters.has("visibility") && row.visibility_source != null
-    ? `<div><span>Visibility (source)</span><strong>${weatherValue(row.visibility_source)}</strong></div>`
+    ? `<div><span>Visibility</span><strong>${weatherValue(row.visibility_source, row.visibility_documented_unit || "")}</strong></div>`
     : "";
   const air = state.coastalWeatherParameters.has("air")
     ? (row.temperature_min_c != null || row.temperature_max_c != null
@@ -1130,6 +1414,13 @@ function coastalWeatherTooltip(row) {
 function weatherDominantSignal(row) {
   const animated = state.coastalWeatherAnimated ? " animated" : "";
   const locationName = row.location_name || row.zone_name || (row.location_type === "port" ? "Port" : "Marine area");
+  if (row.location_type === "storm" && state.coastalWeatherParameters.has("cyclone")) {
+    return {
+      kind: "cyclone",
+      label: `${row.location_name}: ${row.alert_level || "active"} tropical-cyclone alert`,
+      html: `<span class="weather-cyclone${animated} alert-${escapeAttr(String(row.alert_level || "green").toLowerCase())}" title="${escapeAttr(`${row.location_name}: active cyclone`) }">🌀</span>`
+    };
+  }
   const warningReason = weatherWarningReason(row);
   if (state.coastalWeatherParameters.has("warning") && warningReason) {
     return {
@@ -1223,6 +1514,25 @@ function weatherSignalIsNoteworthy(row) {
 }
 
 function weatherDetailEntries(row) {
+  if (row.location_type === "storm") {
+    const ports = Array.isArray(row.affected_ports) ? row.affected_ports : [];
+    const portText = ports.length
+      ? ports.slice(0, 12).map(port => `${port.port_name}${port.country ? ` (${port.country})` : ""} · ${Number(port.distance_to_forecast_track_km).toLocaleString()} km`).join("; ")
+      : "No catalogue ports inside the current forecast-track corridor";
+    return [
+      { label: "Ocean / sea", value: [row.basin, row.ocean_or_sea].filter(Boolean).join(" · ") },
+      { label: "Current position", value: `${Number(row.latitude).toFixed(2)}°, ${Number(row.longitude).toFixed(2)}°` },
+      { label: "Intensity", value: row.weather_condition || "Tropical cyclone" },
+      { label: "Maximum wind", value: row.max_wind_kn == null ? "Not published" : `${Number(row.max_wind_kn).toLocaleString()} kt · ${Number(row.max_wind_kmph).toLocaleString()} km/h` },
+      { label: "Moving", value: row.movement_bearing_deg == null ? row.movement_direction : `${row.movement_direction} · ${Number(row.movement_bearing_deg).toFixed(0)}°` },
+      { label: "Possible landfall / coastal impact", value: row.possible_landfall },
+      { label: "Affected countries", value: Array.isArray(row.affected_countries) && row.affected_countries.length ? row.affected_countries.join(", ") : "None identified in current alert" },
+      { label: `Ports in ${Number(row.impact_radius_km).toLocaleString()} km corridor`, value: portText },
+      { label: "Port-impact method", value: row.impact_methodology },
+      { label: "Originating forecast agency", value: row.source_agency || "RSMC / TCWC" },
+      { label: "Forecast basis", value: row.forecast_basis },
+    ].filter(item => item.value && item.value !== "Not quantified");
+  }
   const details = [];
   const add = (label, value) => {
     if (value !== null && value !== undefined && String(value).trim() && value !== "Not quantified") {
@@ -1241,12 +1551,15 @@ function weatherDetailEntries(row) {
   }
   add("Wave category", row.wave_category);
   add("Wave description", row.wave_description);
+  add("Port weather risk", row.weather_risk_level ? `${row.weather_risk_level} · score ${row.weather_risk_score}` : null);
+  add("Operational impact", Array.isArray(row.operational_impacts) ? row.operational_impacts.join("; ") : row.operational_impacts);
   if (row.current_speed_min_source != null || row.current_speed_max_source != null) {
     add(`Current speed (${row.provider || "official"} source)`, weatherRange(row.current_speed_min_source, row.current_speed_max_source, ""));
   }
   add("Current direction", weatherDirectionRange(row.current_direction_from, row.current_direction_to, "toward"));
-  add(`Visibility (${row.provider || "official"} source)`, row.visibility_source == null ? null : weatherValue(row.visibility_source));
+  add("Visibility", row.visibility_source == null ? null : weatherValue(row.visibility_source, row.visibility_documented_unit || ""));
   add("Official marine area", row.marine_area);
+  add("Offshore wave area", row.offshore_marine_area);
   add("Forecast basis", row.forecast_basis);
   if (row.temperature_min_c != null || row.temperature_max_c != null) {
     add("Temperature", weatherRange(row.temperature_min_c, row.temperature_max_c, "°C"));
@@ -1265,7 +1578,7 @@ function weatherWorkspaceRows() {
   const query = state.coastalWeatherQuery;
   return state.coastalWeatherRows
     .filter(row => state.coastalWeatherLocationType === "all" || row.location_type === state.coastalWeatherLocationType)
-    .filter(row => !query || `${row.location_name || row.zone_name || ""} ${row.country || ""} ${row.weather_condition || ""}`.toLowerCase().includes(query))
+    .filter(row => !query || `${row.location_name || row.zone_name || ""} ${row.country || ""} ${row.weather_condition || ""} ${row.basin || ""} ${row.ocean_or_sea || ""} ${(row.affected_countries || []).join?.(" ") || ""}`.toLowerCase().includes(query))
     .sort((a, b) => {
       const severityRank = { warning: 0, advisory: 1, normal: 2 };
       const adverseRank = row => weatherAdverseCondition(row) ? 0 : 1;
@@ -1282,8 +1595,10 @@ function renderWeatherWorkspace() {
   if (!table || !cards) return;
   const rows = weatherWorkspaceRows();
   const typeLabel = state.coastalWeatherLocationType === "port"
-    ? "ports" : state.coastalWeatherLocationType === "water" ? "marine areas" : "ports and marine areas";
-  document.getElementById("weather-workspace-count").textContent = `${rows.length.toLocaleString()} forecasts`;
+    ? "ports" : state.coastalWeatherLocationType === "water" ? "marine areas" : state.coastalWeatherLocationType === "storm" ? "cyclones and typhoons" : "ports, marine areas and tropical cyclones";
+  document.getElementById("weather-workspace-count").textContent = rows.length && rows.every(row => row.location_type === "storm")
+    ? `${rows.length.toLocaleString()} active storms`
+    : `${rows.length.toLocaleString()} forecasts`;
   document.getElementById("weather-surface-subtitle").textContent =
     `${typeLabel} · ${state.coastalWeatherHours ? `+${state.coastalWeatherHours} hours` : "current forecast"}`;
   const commonColumns = [
@@ -1294,26 +1609,42 @@ function renderWeatherWorkspace() {
     ["Condition", row => row.weather_condition || row.rainfall_category || "—"],
     ["Wind", row => (row.wind_speed_max_kn != null || row.wind_speed_max_kmph != null) ? weatherWindRange(row) : "—"],
     ["Waves", row => row.wave_height_max_m == null ? "—" : weatherRange(row.wave_height_min_m, row.wave_height_max_m, "m")],
+    ["Port risk", row => row.weather_risk_level || "—"],
     ["Adverse weather", row => weatherAdverseCondition(row) || "—"]
   ];
   const portColumns = [
-    ["Current", row => row.current_speed_max_source == null ? "—" : weatherRange(row.current_speed_min_source, row.current_speed_max_source, "")],
-    ["Temperature", row => row.temperature_max_c == null ? "—" : weatherRange(row.temperature_min_c, row.temperature_max_c, "°C")],
-    ["Tide", row => row.high_tide_height_m == null ? "—" : weatherValue(row.high_tide_height_m, "m")]
+    ["Current", row => row.current_speed_max_source == null ? "—" : weatherRange(row.current_speed_min_source, row.current_speed_max_source, ""), row => row.current_speed_max_source != null],
+    ["Temperature", row => row.temperature_max_c == null ? "—" : weatherRange(row.temperature_min_c, row.temperature_max_c, "°C"), row => row.temperature_max_c != null],
+    ["Tide", row => row.high_tide_height_m == null ? "—" : weatherValue(row.high_tide_height_m, "m"), row => row.high_tide_height_m != null]
+  ].filter(([, , hasValue]) => rows.some(hasValue)).map(([label, value]) => [label, value]);
+  const cycloneColumns = [
+    ["Storm", row => row.location_name || "Unknown"],
+    ["Ocean / sea", row => row.ocean_or_sea || row.basin || "—"],
+    ["Alert", row => row.alert_level || "—"],
+    ["Intensity", row => row.weather_condition || "—"],
+    ["Maximum wind", row => row.max_wind_kn == null ? "—" : `${Number(row.max_wind_kn).toLocaleString()} kt`],
+    ["Moving", row => row.movement_direction || "—"],
+    ["Possible impact area", row => (row.affected_countries || []).join(", ") || "Offshore / not identified"],
+    ["Ports in corridor", row => String(row.affected_port_count ?? 0)],
+    ["Updated", row => row.issued_at ? new Date(row.issued_at).toLocaleString() : "—"]
   ];
-  const columns = state.coastalWeatherLocationType === "port" ? [...commonColumns, ...portColumns] : commonColumns;
+  const cycloneOnly = state.coastalWeatherLocationType === "storm" || state.coastalWeatherSource === "cyclones";
+  const columns = cycloneOnly ? cycloneColumns : state.coastalWeatherLocationType === "port" ? [...commonColumns, ...portColumns] : commonColumns;
   table.innerHTML = rows.length ? `<table><thead><tr>${columns.map(([label]) => `<th>${escapeHtml(label)}</th>`).join("")}<th></th></tr></thead><tbody>${rows.map(row => `<tr class="severity-${weatherAdverseCondition(row) ? "warning" : "normal"}">${columns.map(([, value]) => `<td>${escapeHtml(value(row))}</td>`).join("")}<td><button type="button" data-weather-location="${escapeAttr(row.location_id)}">Details</button></td></tr>`).join("")}</tbody></table>` : `<div class="weather-empty-state">No forecasts match these filters.</div>`;
   cards.innerHTML = rows.length ? rows.slice(0, 160).map(row => {
     const details = weatherDetailEntries(row);
     const warning = weatherWarningReason(row);
     const displaySeverity = warning ? "warning" : "normal";
+    const statusLabel = row.alert_level || row.weather_risk_level || displaySeverity;
+    const locationType = row.location_type === "storm" ? "TROPICAL CYCLONE" : row.location_type === "port" ? "PORT" : "MARINE AREA";
     return `<article class="weather-workspace-card severity-${displaySeverity}">
-      <header><div><span>${escapeHtml(row.provider || "Official")} · ${row.location_type === "port" ? "PORT" : "MARINE AREA"}</span><h2>${escapeHtml(row.location_name || row.zone_name)}</h2></div><b>${displaySeverity}</b></header>
+      <header><div><span>${escapeHtml(row.provider || "Official")} · ${locationType}</span><h2>${escapeHtml(row.location_name || row.zone_name)}</h2></div><b>${escapeHtml(statusLabel)}</b></header>
       <p class="weather-workspace-period">${escapeHtml(weatherPeriod(row))}</p>
       ${warning ? `<p class="weather-workspace-warning">${escapeHtml(warning)}</p>` : ""}
+      ${row.location_type === "storm" ? `<div class="cyclone-card-motion" aria-label="Forecast movement ${escapeAttr(row.movement_direction || "unknown")}"><span>🌀</span><i></i><b>➤</b><small>${escapeHtml(row.movement_direction || "Direction not published")}</small></div>` : ""}
       <div class="weather-workspace-metrics">${details.map(item => `<div><span>${escapeHtml(item.label)}</span><strong>${escapeHtml(item.value)}</strong></div>`).join("")}</div>
-      ${row.weather_description || row.summary ? `<p class="weather-workspace-summary">${escapeHtml(row.weather_description || row.summary)}</p>` : ""}
-      <button type="button" data-weather-location="${escapeAttr(row.location_id)}">Open detailed forecast</button>
+      ${row.location_type !== "storm" && (row.weather_description || row.summary) ? `<p class="weather-workspace-summary">${escapeHtml(row.weather_description || row.summary)}</p>` : ""}
+      <button type="button" data-weather-location="${escapeAttr(row.location_id)}">${row.location_type === "storm" ? "Open cyclone details" : "Open detailed forecast"}</button>
     </article>`;
   }).join("") : `<div class="weather-empty-state">No forecasts match these filters.</div>`;
   document.querySelectorAll("[data-weather-location]").forEach(button => {
@@ -1334,19 +1665,28 @@ function showCoastalWeatherCard(row) {
     ? `<a class="official-port-link weather-source-link" href="${escapeAttr(row.source_url)}" target="_blank" rel="noopener">Open official ${escapeHtml(row.provider || "weather")} source</a>`
     : "";
   const details = weatherDetailEntries(row);
-  const summary = row.weather_description || row.summary;
+  const summary = row.location_type === "storm" ? null : row.weather_description || row.summary;
   const portAlert = portWeatherAlertReason(row);
+  const cycloneMotion = row.location_type === "storm"
+    ? `<div class="cyclone-card-motion cyclone-card-motion-large" aria-label="Forecast movement ${escapeAttr(row.movement_direction || "unknown")}"><span>🌀</span><i></i><b>➤</b><small>Forecast movement: ${escapeHtml(row.movement_direction || "not published")}</small></div>`
+    : "";
+  const sourceCaveat = row.location_type === "storm"
+    ? ` GDACS aggregates the originating ${escapeHtml(row.source_agency || "RSMC / TCWC")} advisory. Affected ports are HRP proximity estimates and do not mean a port is closed. ${escapeHtml(row.forecast_disclaimer || "Track and landfall can change with each advisory.")}`
+    : row.provider_code === "bmkg"
+      ? " BMKG documents the current field as cm/s but its port pages also present currents in knots; visibility has no declared API unit. Those values are shown without inferred conversion."
+      : " Port values mapped from a marine area are labelled as area-based forecasts, not port observations.";
   document.getElementById("port-card-content").innerHTML =
-    `<span class="detail-eyebrow">${escapeHtml(row.provider || "Official")} ${escapeHtml(row.location_type === "port" ? "port" : "marine-area")} forecast</span>` +
+    `<span class="detail-eyebrow">${escapeHtml(row.provider || "Official")} ${escapeHtml(row.location_type === "storm" ? "tropical-cyclone alert" : row.location_type === "port" ? "port forecast" : "marine-area forecast")}</span>` +
     `<h2>${escapeHtml(row.location_name || row.zone_name)}</h2>` +
     `<p class="detail-meta">${escapeHtml(weatherPeriod(row))}</p>` +
     (portAlert ? `<div class="weather-port-alert-banner"><strong>Adverse weather</strong><span>${escapeHtml(portAlert)}</span></div>` : "") +
-    `<div class="weather-card-severity severity-${warningReason ? "warning" : "normal"}">${severity}</div>` +
+    `<div class="weather-card-severity severity-${warningReason ? "warning" : "normal"}">${escapeHtml(row.location_type === "storm" ? `${row.alert_level || "Active"} GDACS alert` : row.weather_risk_level ? `${row.weather_risk_level} port risk` : severity)}</div>` +
     (warningReason && !portAlert ? `<p class="weather-card-warning-copy">${escapeHtml(warningReason)}</p>` : "") +
+    cycloneMotion +
     `<div class="detail-grid weather-detail-grid">${details.map(item => detailCell(item.label, item.value)).join("")}</div>` +
     (summary ? `<p class="weather-card-summary">${escapeHtml(summary)}</p>` : "") +
     sourceLink +
-    `<p class="detail-note">Official forecast, not a live observation and not for navigation. Source: ${escapeHtml(row.provider || "official meteorological agency")}.${row.provider_code === "bmkg" ? " BMKG documents the current field as cm/s but its port pages also present currents in knots; visibility has no declared API unit. Those values are shown without inferred conversion." : " Port values mapped from a marine area are labelled as area-based forecasts, not port observations."}</p>`;
+    `<p class="detail-note">Official forecast, not a live observation and not for navigation. Source: ${escapeHtml(row.provider || "official meteorological agency")}.${sourceCaveat}${row.risk_methodology ? ` Risk: ${escapeHtml(row.risk_methodology)}.` : ""}</p>`;
   card.classList.add("open");
   card.setAttribute("aria-hidden", "false");
 }
@@ -1367,6 +1707,49 @@ function renderCoastalWeather() {
       if (event?.originalEvent) L.DomEvent.stopPropagation(event.originalEvent);
       showCoastalWeatherCard(row);
     };
+    if (row.location_type === "storm") {
+      const alertColor = row.alert_level === "Red" ? "#b4141f" : row.alert_level === "Orange" ? "#e56a1b" : "#f0b429";
+      const observedTrack = Array.isArray(row.observed_track) ? row.observed_track : [];
+      const forecastTrack = Array.isArray(row.forecast_track) ? row.forecast_track : [];
+      if (observedTrack.length > 1) {
+        L.polyline(observedTrack, { color: "#536779", weight: 2, opacity: 0.8, className: "cyclone-observed-track" }).addTo(state.weatherLayer);
+      }
+      if (forecastTrack.length > 1) {
+        const forecastLine = L.polyline(forecastTrack, {
+          color: alertColor, weight: 3, opacity: 0.95, dashArray: "10 8",
+          className: state.coastalWeatherAnimated ? "cyclone-forecast-track animated" : "cyclone-forecast-track"
+        }).bindTooltip(`<strong>${escapeHtml(row.location_name)}</strong><br>Forecast movement: ${escapeHtml(row.movement_direction || "not published")}<br>Click for ports and landfall context`, { sticky: true, className: "weather-leaflet-tooltip" });
+        forecastLine.on("click", openWeatherDetails);
+        forecastLine.addTo(state.weatherLayer);
+      }
+      if (row.forecast_cone) {
+        const cone = L.geoJSON(row.forecast_cone, { interactive: true, style: {
+          color: alertColor, weight: 1.2, opacity: 0.8, fillColor: alertColor, fillOpacity: 0.07, dashArray: "5 4"
+        }});
+        cone.on("click", openWeatherDetails);
+        cone.eachLayer(layer => layer.on("click", openWeatherDetails));
+        cone.addTo(state.weatherLayer);
+      }
+      (row.affected_ports || []).slice(0, mapZoom >= 5 ? 30 : 12).forEach(port => {
+        const portMarker = L.circleMarker([Number(port.latitude), Number(port.longitude)], {
+          radius: mapZoom >= 6 ? 4 : 2.7, color: "#fff", weight: 1,
+          fillColor: "#8a3ffc", fillOpacity: 0.92
+        }).bindTooltip(`<strong>${escapeHtml(port.port_name)}</strong><br>${escapeHtml(port.country || "")}${port.country ? " · " : ""}${Number(port.distance_to_forecast_track_km).toLocaleString()} km from forecast track<br>Proximity estimate; not a closure notice`, { className: "weather-leaflet-tooltip" });
+        portMarker.on("click", openWeatherDetails);
+        portMarker.addTo(state.weatherLayer);
+      });
+      const stormMarker = L.marker([Number(row.latitude), Number(row.longitude)], {
+        interactive: true, keyboard: true, title: `Open ${row.location_name} cyclone details`,
+        icon: L.divIcon({
+          className: "weather-symbol-marker cyclone-map-marker",
+          html: `<span class="weather-cyclone${state.coastalWeatherAnimated ? " animated" : ""} alert-${escapeAttr(String(row.alert_level || "green").toLowerCase())}">🌀</span><b>${escapeHtml(String(row.storm_name || row.location_name).replace(/^(Tropical Cyclone|Cyclone)\s+/i, ""))}</b>`,
+          iconSize: [92, 42], iconAnchor: [21, 21]
+        })
+      }).bindTooltip(`<strong>${escapeHtml(row.location_name)}</strong><br>${escapeHtml(row.weather_condition || "Tropical cyclone")}<br>${Number(row.max_wind_kn || 0).toLocaleString()} kt · moving ${escapeHtml(row.movement_direction || "unknown")}`, { className: "weather-leaflet-tooltip" });
+      stormMarker.on("click", openWeatherDetails);
+      stormMarker.addTo(state.weatherSymbolLayer);
+      return;
+    }
     let center = null;
     if (row.geometry) {
       const polygon = L.geoJSON(row.geometry, {
@@ -1442,7 +1825,7 @@ function renderCoastalWeather() {
     weatherMarker.addTo(state.weatherSymbolLayer);
   });
   document.getElementById("weather-layer-count").textContent =
-    rows.length ? `${rows.length} forecasts` : "No values";
+    rows.length ? (rows.every(row => row.location_type === "storm") ? `${rows.length} active storms` : `${rows.length} forecasts`) : "No values";
 }
 
 function loadAisPreferences() {
@@ -4065,6 +4448,7 @@ function closePortCard() {
   card.classList.remove("open");
   card.classList.remove("port-spec-card");
   card.classList.remove("weather-detail-card");
+  card.classList.remove("river-detail-card");
   card.setAttribute("aria-hidden", "true");
 }
 

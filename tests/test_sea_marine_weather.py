@@ -4,6 +4,8 @@ from sea_marine_weather import (
     parse_met_shipping,
     parse_nchmf_sea,
     parse_nmc_offshore,
+    parse_nmc_coastal,
+    merge_china_port_forecasts,
     parse_pagasa_gale,
     parse_singapore,
     parse_tmd_shipping,
@@ -61,6 +63,35 @@ class SeaMarineWeatherParserTests(unittest.TestCase):
         self.assertTrue(all(row["country"] == "China" for row in rows))
         self.assertEqual(rows[0]["weather_condition"], "Light rain")
         self.assertEqual(rows[0]["wind_direction_from"], "Northeast")
+
+    def test_china_nmc_coastal_maps_dry_bulk_ports_and_risk(self):
+        page = '''<div class=author>2026年08月11日14时</div><table><tbody>
+        <tr name="唐山沿岸"><td rowspan=2>唐山沿岸</td><td>00-12</td><td>雷阵雨</td><td>东北风</td><td>6～7</td><td>4</td></tr>
+        <tr name="唐山沿岸"><td>12-24</td><td>小雨</td><td>北风</td><td>4～5</td><td>10</td></tr>
+        </tbody></table>'''
+        rows = parse_nmc_coastal(page)
+        self.assertEqual({row["location_name"] for row in rows}, {"Caofeidian", "Jingtang"})
+        first = next(row for row in rows if row["location_name"] == "Caofeidian" and row["weather_condition"] == "Thundershowers")
+        self.assertEqual(first["visibility_source"], 4.0)
+        self.assertEqual(first["weather_risk_level"], "High")
+        self.assertIn("loading", " ".join(first["operational_impacts"]).lower())
+
+    def test_china_coastal_forecast_is_enriched_with_offshore_wave(self):
+        offshore = [{
+            "location_name": "Caofeidian", "location_id": "cma-port-caofeidian",
+            "valid_from": "2026-08-11T14:00:00+08:00", "valid_to": "2026-08-12T02:00:00+08:00",
+            "marine_area": "Bohai Sea", "wave_height_min_m": 2.5, "wave_height_max_m": 2.5,
+        }]
+        coastal = [{
+            "location_name": "Caofeidian", "location_id": "cma-port-caofeidian",
+            "valid_from": "2026-08-11T14:00:00+08:00", "valid_to": "2026-08-12T02:00:00+08:00",
+            "marine_area": "Tangshan coast", "weather_condition": "Light rain",
+            "wind_speed_max_kn": 21.0, "visibility_source": 10.0,
+        }]
+        rows = merge_china_port_forecasts(offshore, coastal)
+        self.assertEqual(rows[0]["wave_height_max_m"], 2.5)
+        self.assertEqual(rows[0]["offshore_marine_area"], "Bohai Sea")
+        self.assertEqual(rows[0]["weather_risk_level"], "Moderate")
 
     def test_vietnam_nchmf_maps_ports_with_english_summary(self):
         page = '''<caption>SEA WEATHER - Day and night 05/08/2026</caption>

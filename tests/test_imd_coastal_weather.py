@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from app import app, imd_coastal_weather_manager
 from imd_coastal_weather import (
     discover_pdf_urls,
+    expand_imd_records,
     latest_document_date,
     merge_records,
     parse_coastal_bulletin_html,
@@ -80,6 +81,36 @@ class ImdCoastalWeatherParserTests(unittest.TestCase):
         )
         self.assertEqual(latest.date().isoformat(), "2026-08-02")
 
+    def test_expands_imd_zone_to_shared_area_and_port_cards(self):
+        record = {
+            "zone_id": "north_gujarat", "zone_name": "North Gujarat coast", "day": 1,
+            "rainfall_category": "Widespread rain", "wind_speed_min_kmph": 40,
+            "wind_speed_max_kmph": 55, "gust_kmph": 65,
+            "wave_height_min_m": 2.5, "wave_height_max_m": 3.2,
+            "severity": "advisory", "summary": "Widespread rain · 40–55 km/h",
+            "source_issue_time": "1730 IST", "source_url": "https://mausam.imd.gov.in/test.pdf",
+            "valid_date": "2026-08-11", "geometry": {"type": "Polygon", "coordinates": []},
+        }
+        rows = expand_imd_records([record])
+        self.assertEqual({row["location_type"] for row in rows}, {"water", "port"})
+        self.assertEqual(
+            {row["location_name"] for row in rows if row["location_type"] == "port"},
+            {"Deendayal (Kandla)", "Mundra"},
+        )
+        port = next(row for row in rows if row["location_type"] == "port")
+        self.assertEqual(port["country"], "India")
+        self.assertIn("not a port observation", port["forecast_basis"])
+        self.assertEqual(port["weather_risk_level"], "High")
+
+    def test_does_not_create_empty_india_weather_cards(self):
+        rows = expand_imd_records([{
+            "zone_id": "north_gujarat", "zone_name": "North Gujarat coast", "day": 2,
+            "rainfall_category": None, "wind_speed_min_kmph": None,
+            "wind_speed_max_kmph": None, "gust_kmph": None,
+            "wave_height_min_m": None, "wave_height_max_m": None,
+        }])
+        self.assertEqual(rows, [])
+
 
 class ImdCoastalWeatherApiTests(unittest.TestCase):
     def setUp(self):
@@ -121,13 +152,15 @@ class ImdCoastalWeatherApiTests(unittest.TestCase):
     def test_day_filter_and_csv_download(self):
         response = self.client.get("/api/imd/coastal-weather?day=1")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.json()["rows"]), 1)
-        self.assertEqual(response.json()["rows"][0]["day"], 1)
+        self.assertEqual(len(response.json()["rows"]), 3)
+        self.assertEqual({row["location_type"] for row in response.json()["rows"]}, {"water", "port"})
+        self.assertTrue(all(row["day"] == 1 for row in response.json()["rows"]))
 
         export = self.client.get("/api/imd/coastal-weather/export.csv")
         self.assertEqual(export.status_code, 200)
         self.assertIn("text/csv", export.headers["content-type"])
         self.assertIn("North Gujarat coast", export.text)
+        self.assertIn("Deendayal (Kandla)", export.text)
 
 
 if __name__ == "__main__":

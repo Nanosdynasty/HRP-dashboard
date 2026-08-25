@@ -65,6 +65,7 @@ button, summary, label, select { -webkit-tap-highlight-color: transparent; }
 .commodity-icon { background: var(--hrp-red); }
 .ais-icon { background: #008ea8; box-shadow: 0 0 0 3px rgba(0,142,168,.12); }
 .weather-icon { background: #2c91b4; box-shadow: 0 0 0 3px rgba(44,145,180,.12); }
+.river-icon { background: #1976a3; box-shadow: 0 0 0 3px rgba(25,118,163,.13); }
 .voyage-icon { background: #6d7c9b; }
 .section-count { margin-left: auto; color: #88929b; font-size: 10px; font-weight: 400; }
 .section-body { padding: 2px 13px 14px; border-top: 1px solid #edf0f2; }
@@ -206,6 +207,7 @@ button, summary, label, select { -webkit-tap-highlight-color: transparent; }
 .weather-param-dot.wind { background: #78a66b; }
 .weather-param-dot.wave { background: #4b62b2; }
 .weather-param-dot.warning { background: #c93036; }
+.weather-param-dot.cyclone { background: #8a3ffc; box-shadow: 0 0 0 1px #4d1d95; }
 .weather-param-dot.current { background: #0e8e88; }
 .weather-param-dot.visibility { background: #627985; }
 .weather-param-dot.air { background: #d87828; }
@@ -654,6 +656,37 @@ button, summary, label, select { -webkit-tap-highlight-color: transparent; }
 .weather-tooltip small { display: block; margin-top: 7px; color: var(--muted); font-size: 8px; line-height: 1.4; }
 .weather-tooltip a { color: var(--hrp-blue); }
 .weather-symbol-marker { z-index: 1; background: transparent; border: 0; cursor: pointer; }
+.weather-cyclone {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #f0b429;
+  box-shadow: 0 0 0 2px rgba(59,36,107,.38), 0 4px 13px rgba(15,24,39,.38);
+  font-size: 22px;
+  line-height: 1;
+}
+.weather-cyclone.alert-orange { background: #e56a1b; }
+.weather-cyclone.alert-red { background: #b4141f; }
+.weather-cyclone.animated { animation: cyclone-spin 2.7s linear infinite, cyclone-pulse 1.8s ease-in-out infinite; }
+.cyclone-map-marker { display: flex; width: 92px !important; align-items: center; gap: 5px; }
+.cyclone-map-marker b {
+  max-width: 58px;
+  padding: 3px 5px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.9);
+  border-radius: 2px;
+  color: #fff;
+  background: rgba(28,41,74,.9);
+  box-shadow: 0 2px 8px rgba(0,0,0,.22);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cyclone-forecast-track.animated { animation: cyclone-track-flow 1.4s linear infinite; }
 .weather-symbols {
   display: flex;
   position: relative;
@@ -800,8 +833,11 @@ button, summary, label, select { -webkit-tap-highlight-color: transparent; }
   0%, 100% { opacity: 1; transform: translateY(0) scale(1); }
   50% { opacity: .38; transform: translateY(-1px) scale(1.04); }
 }
+@keyframes cyclone-spin { to { transform: rotate(360deg); } }
+@keyframes cyclone-pulse { 0%, 100% { filter: brightness(.96); } 50% { filter: brightness(1.25); } }
+@keyframes cyclone-track-flow { to { stroke-dashoffset: -36; } }
 @media (prefers-reduced-motion: reduce) {
-  .weather-symbols *, .weather-symbols::before { animation: none !important; }
+  .weather-symbols *, .weather-symbols::before, .weather-cyclone, .cyclone-forecast-track, .cyclone-card-motion * { animation: none !important; }
 }
 
 .coal-workspace-header {
@@ -1072,6 +1108,26 @@ button, summary, label, select { -webkit-tap-highlight-color: transparent; }
 .weather-workspace-card.severity-warning header b { color: #8a1f24; background: #fde9ea; }
 .weather-workspace-period { margin: 8px 0 10px; color: var(--muted); font-size: 8px; }
 .weather-workspace-warning { margin: 0 0 10px; padding: 8px 10px; color: #8a1f24; background: #fff1f2; font-size: 9px; font-weight: 700; line-height: 1.4; }
+.cyclone-card-motion {
+  display: grid;
+  grid-template-columns: 28px 1fr 22px;
+  position: relative;
+  min-height: 38px;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 10px;
+  padding: 5px 8px;
+  overflow: hidden;
+  color: #fff;
+  background: linear-gradient(90deg, #24364c, #375b78);
+}
+.cyclone-card-motion span { z-index: 1; font-size: 21px; animation: cyclone-spin 2.7s linear infinite; }
+.cyclone-card-motion i { height: 2px; background: repeating-linear-gradient(90deg, #88d6ed 0 8px, transparent 8px 14px); animation: cyclone-card-flow 1.1s linear infinite; }
+.cyclone-card-motion b { font-size: 16px; animation: cyclone-arrow 1.4s ease-in-out infinite; }
+.cyclone-card-motion small { grid-column: 1 / -1; color: #dce8ee; font-size: 8px; text-transform: capitalize; }
+.cyclone-card-motion-large { margin: 12px 0; min-height: 48px; }
+@keyframes cyclone-card-flow { to { background-position: 28px 0; } }
+@keyframes cyclone-arrow { 0%, 100% { transform: translateX(-3px); } 50% { transform: translateX(4px); } }
 .weather-workspace-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #dfe6e9; }
 .weather-workspace-metrics div { min-width: 0; padding: 8px; background: #f6f8f9; }
 .weather-workspace-metrics span { display: block; color: #71818c; font-size: 7px; text-transform: uppercase; }
@@ -1727,6 +1783,90 @@ button, summary, label, select { -webkit-tap-highlight-color: transparent; }
 .datahub-dialog button.datahub-dialog-close { position: absolute; top: 8px; right: 10px; width: 30px; min-height: 30px; border: 0; font-size: 20px; }
 .datahub-dialog p { margin: 0; color: #74808b; font-size: 8px; line-height: 1.45; }
 .datahub-selected-file { padding: 9px; color: #5c6873; background: #f3f6f8; border: 1px dashed #bdc9d2; font-size: 9px; }
+
+/* Source-backed inland waterway dashboard. */
+.river-section[open] { border-left-color: #1976a3; }
+.river-card { padding: 2px 13px 14px; border-top: 1px solid #edf0f2; }
+.river-view-switch { margin-bottom: 3px; }
+.river-data-surface {
+  position: absolute; inset: 0; z-index: 620; overflow: auto;
+  color: var(--hrp-navy); background: #f1f5f7;
+}
+.river-surface-header {
+  position: sticky; top: 0; z-index: 3; display: flex; align-items: end;
+  justify-content: space-between; gap: 24px; padding: 22px 28px 18px;
+  border-bottom: 1px solid #d9e1e5; background: rgba(255,255,255,.97);
+  backdrop-filter: blur(8px);
+}
+.river-surface-header span { color: #1976a3; font-size: 9px; font-weight: 800; letter-spacing: .13em; }
+.river-surface-header h1 { margin: 3px 0 2px; font-size: 23px; }
+.river-surface-header p { margin: 0; color: var(--muted); font-size: 10px; }
+.river-surface-actions { display: flex; align-items: end; gap: 12px; }
+.river-surface-actions label { display: grid; gap: 4px; color: var(--muted); font-size: 8px; letter-spacing: .08em; text-transform: uppercase; }
+.river-surface-actions input { width: 230px; height: 34px; padding: 0 10px; border: 1px solid #cfd9de; background: #fff; }
+.river-surface-actions strong { min-width: 105px; padding: 10px 12px; color: #fff; background: var(--hrp-navy); font-size: 10px; text-align: center; }
+.river-kpis { display: grid; grid-template-columns: repeat(5, minmax(120px, 1fr)); gap: 10px; padding: 16px 24px 0; }
+.river-kpis article { padding: 13px 15px; border-top: 3px solid #1976a3; background: #fff; box-shadow: 0 3px 14px rgba(23,50,68,.07); }
+.river-kpis span, .river-kpis strong { display: block; }
+.river-kpis span { color: #6f7f8b; font-size: 7px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.river-kpis strong { margin-top: 5px; color: var(--hrp-navy); font-size: 20px; }
+.river-workspace-table { padding: 15px 24px 24px; overflow-x: auto; }
+.river-workspace-table table { width: 100%; border-collapse: separate; border-spacing: 0; background: #fff; box-shadow: 0 4px 18px rgba(27,45,56,.08); }
+.river-workspace-table th { position: sticky; top: 91px; z-index: 2; padding: 10px; color: #fff; background: #24364c; font-size: 8px; letter-spacing: .08em; text-align: left; text-transform: uppercase; }
+.river-workspace-table td { padding: 10px; border-bottom: 1px solid #e5eaed; color: #27384b; font-size: 9px; vertical-align: middle; }
+.river-workspace-table td:first-child { border-left: 3px solid #1976a3; }
+.river-workspace-table td strong, .river-workspace-table td small { display: block; }
+.river-workspace-table td small { margin-top: 2px; color: #75838d; }
+.river-workspace-table tr.river-status-below_normal td:first-child { border-left-color: #c47a16; }
+.river-workspace-table tr.river-status-above_normal td:first-child { border-left-color: #7d3c98; }
+.river-workspace-table tr.river-status-unavailable td:first-child { border-left-color: #7b8992; }
+.river-workspace-table button, .river-workspace-card > button { padding: 7px 10px; border: 1px solid #174f82; color: #174f82; background: #fff; font-size: 8px; font-weight: 800; cursor: pointer; }
+.river-workspace-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(285px, 1fr)); gap: 14px; padding: 15px 24px 28px; }
+.river-workspace-card { --river-color:#1976a3; display: flex; min-height: 330px; flex-direction: column; padding: 17px; border-top: 4px solid var(--river-color); background: #fff; box-shadow: 0 5px 18px rgba(27,45,56,.08); }
+.river-workspace-card.river-status-below_normal { --river-color:#c47a16; }
+.river-workspace-card.river-status-above_normal { --river-color:#7d3c98; }
+.river-workspace-card.river-status-unavailable { --river-color:#7b8992; }
+.river-workspace-card header { display: flex; justify-content: space-between; gap: 12px; }
+.river-workspace-card header span { color: #1976a3; font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.river-workspace-card h2 { margin: 3px 0 0; font-size: 16px; }
+.river-workspace-card header p { margin: 2px 0; color: #6d7c88; font-size: 9px; }
+.river-workspace-card header b { height: fit-content; max-width: 120px; padding: 5px 7px; color: #fff; background: var(--river-color); font-size: 7px; text-align: center; text-transform: uppercase; }
+.river-level-hero { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin: 14px 0 10px; padding-bottom: 10px; border-bottom: 1px solid #e2e8eb; }
+.river-level-hero > div { display: grid; gap: 2px; }
+.river-level-hero small { color: #72818c; font-size: 7px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.river-level-hero strong { color: var(--hrp-navy); font-size: 25px; }
+.river-level-hero span { color: #697985; font-size: 8px; text-align: right; text-transform: capitalize; }
+.river-workspace-card > p { flex: 1; color: #5e6f7b; font-size: 9px; line-height: 1.5; }
+.river-workspace-card > button { align-self: flex-start; margin-top: auto; }
+.river-source-directory { margin: 0 24px 28px; border: 1px solid #d7e0e5; background: #fff; }
+.river-source-directory > summary { padding: 13px 15px; color: var(--hrp-navy); cursor: pointer; font-size: 10px; font-weight: 800; }
+.river-source-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; padding: 0 14px 14px; }
+.river-source-card { display: grid; gap: 6px; padding: 12px; border: 1px solid #e0e6e9; border-left: 3px solid #8998a3; }
+.river-source-card.source-connected { border-left-color: #27845b; }
+.river-source-card.source-connector_ready { border-left-color: #1976a3; }
+.river-source-card header { display: flex; justify-content: space-between; gap: 8px; }
+.river-source-card header strong { font-size: 10px; }
+.river-source-card header b { color: #60707b; font-size: 7px; text-transform: uppercase; }
+.river-source-card > span, .river-source-card > small { color: #73818b; font-size: 8px; }
+.river-source-card p { margin: 0; color: #465966; font-size: 9px; }
+.river-source-card a { color: var(--hrp-blue); font-size: 8px; font-weight: 800; }
+.river-card-status { margin: 0 0 11px; padding: 8px 10px; border-left: 4px solid var(--river-status); color: var(--hrp-navy); background: #f1f5f7; font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.river-sparkline { margin: 4px 0 12px; padding: 8px 8px 5px; background: #f4f8fa; border: 1px solid #e1e8ec; }
+.river-sparkline svg { display: block; width: 100%; height: 58px; overflow: visible; }
+.river-sparkline polyline { fill: none; stroke: #1976a3; stroke-width: 2.2; vector-effect: non-scaling-stroke; }
+.river-sparkline small, .river-sparkline-empty { color: #75848e; font-size: 7px; }
+.river-sparkline-empty { margin: 4px 0 12px; padding: 12px; background: #f4f6f7; border: 1px dashed #ccd6db; text-align: center; }
+.river-key { background: #1976a3; }
+
+@media (max-width: 900px) {
+  .river-surface-header { align-items: stretch; flex-direction: column; padding: 16px; }
+  .river-surface-actions { align-items: stretch; flex-direction: column; }
+  .river-surface-actions input { width: 100%; }
+  .river-kpis { grid-template-columns: 1fr 1fr; padding: 12px; }
+  .river-workspace-table, .river-workspace-cards { padding: 12px; }
+  .river-workspace-cards { grid-template-columns: 1fr; }
+  .river-source-directory { margin: 0 12px 18px; }
+}
 
 @media (max-width: 1200px) {
   .datahub-provider-grid { grid-template-columns: repeat(3, minmax(180px, 1fr)); }

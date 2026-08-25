@@ -1,4 +1,4 @@
-"""Official Southeast Asian marine-weather adapters.
+"""Official Asian marine-weather adapters.
 
 The cache contains normalized fields only. Source HTML/JSON responses are never
 persisted. Port rows derived from an official sea-area forecast are labelled as
@@ -20,7 +20,7 @@ import httpx
 
 log = logging.getLogger("sea-marine-weather")
 REFRESH_SECONDS = 3 * 60 * 60
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 USER_AGENT = "HRP-Dashboard/1.0 (official maritime forecast visualization)"
 
 MET_BASE = "https://www.met.gov.my"
@@ -31,6 +31,7 @@ PAGASA_HIGH_SEAS = "https://www.pagasa.dost.gov.ph/marine/high-seas-forecast"
 SG_24H = "https://api-open.data.gov.sg/v2/real-time/api/twenty-four-hr-forecast"
 SG_SOURCE = "https://www.weather.gov.sg/weather-forecast-24hrforecast/"
 NMC_OFFSHORE = "https://www.nmc.cn/publish/marine/offshore.html"
+NMC_COASTAL = "https://www.nmc.cn/publish/marine/newcoastal.html"
 NCHMF_SEA = "https://nchmf.gov.vn/kttvsiteE/en-US/2/index.html"
 
 
@@ -57,6 +58,9 @@ PORTS = {
     "Qinzhou": (21.72, 108.60), "Haikou": (20.03, 110.28),
     "Guangzhou": (22.75, 113.58), "Shenzhen": (22.47, 114.25),
     "Hong Kong": (22.30, 114.17),
+    "Jingtang": (39.20, 119.00), "Huanghua": (38.32, 117.88),
+    "Bayuquan": (40.30, 122.10), "Yantai": (37.58, 121.40),
+    "Zhanjiang": (21.16, 110.40),
     "Hai Phong": (20.84, 106.78), "Da Nang": (16.12, 108.22),
     "Quy Nhon": (13.77, 109.25), "Nha Trang": (12.24, 109.20),
     "Vung Tau": (10.33, 107.07), "Cai Mep": (10.52, 107.00),
@@ -70,6 +74,7 @@ PORT_COUNTRIES = {
         "Tianjin", "Qinhuangdao", "Caofeidian", "Dalian", "Qingdao", "Rizhao",
         "Lianyungang", "Shanghai", "Ningbo-Zhoushan", "Fuzhou", "Xiamen",
         "Fangcheng", "Qinzhou", "Haikou", "Guangzhou", "Shenzhen", "Hong Kong",
+        "Jingtang", "Huanghua", "Bayuquan", "Yantai", "Zhanjiang",
     )},
     **{port: "Vietnam" for port in (
         "Hai Phong", "Da Nang", "Quy Nhon", "Nha Trang", "Vung Tau", "Cai Mep",
@@ -195,8 +200,86 @@ CHINA_AREAS = {
     "南海东北部": ("Northeastern South China Sea", ["Shenzhen", "Hong Kong"]),
 }
 
-ZH_WEATHER = {"晴": "Clear", "多云": "Cloudy", "阴": "Overcast", "小雨": "Light rain", "中雨": "Moderate rain", "大雨": "Heavy rain", "暴雨": "Torrential rain"}
-ZH_WIND = {"北风": "North", "东北风": "Northeast", "东风": "East", "东南风": "Southeast", "南风": "South", "西南风": "Southwest", "西风": "West", "西北风": "Northwest"}
+CHINA_COASTAL_AREAS = {
+    "辽东半岛西部沿岸": ("Western Liaodong Peninsula coast", ["Bayuquan"]),
+    "辽东半岛南部沿岸": ("Southern Liaodong Peninsula coast", ["Dalian"]),
+    "辽东半岛东部沿岸": ("Eastern Liaodong Peninsula coast", ["Dalian"]),
+    "秦皇岛沿岸": ("Qinhuangdao coast", ["Qinhuangdao"]),
+    "唐山沿岸": ("Tangshan coast", ["Caofeidian", "Jingtang"]),
+    "沧州沿岸": ("Cangzhou coast", ["Huanghua"]),
+    "渤海湾": ("Bohai Bay coast", ["Tianjin"]),
+    "山东半岛北部沿岸": ("Northern Shandong Peninsula coast", ["Yantai"]),
+    "山东半岛东部沿岸": ("Eastern Shandong Peninsula coast", ["Qingdao"]),
+    "山东半岛南部沿岸": ("Southern Shandong Peninsula coast", ["Qingdao", "Rizhao"]),
+    "连云港沿岸": ("Lianyungang coast", ["Lianyungang"]),
+    "上海沿岸": ("Shanghai coast", ["Shanghai"]),
+    "浙江北部沿岸": ("Northern Zhejiang coast", ["Ningbo-Zhoushan"]),
+    "浙江中部沿岸": ("Central Zhejiang coast", ["Ningbo-Zhoushan"]),
+    "福建北部沿岸": ("Northern Fujian coast", ["Fuzhou"]),
+    "福建中部沿岸": ("Central Fujian coast", ["Fuzhou"]),
+    "福建南部沿岸": ("Southern Fujian coast", ["Xiamen"]),
+    "珠江口外沿岸": ("Outer Pearl River Estuary coast", ["Guangzhou", "Shenzhen", "Hong Kong"]),
+    "湛江沿岸": ("Zhanjiang coast", ["Zhanjiang"]),
+    "北部湾东北部沿岸": ("Northeastern Beibu Gulf coast", ["Fangcheng", "Qinzhou"]),
+    "琼州海峡": ("Qiongzhou Strait", ["Haikou"]),
+}
+
+ZH_WEATHER = {
+    "晴": "Clear", "多云": "Cloudy", "阴": "Overcast", "雾": "Fog",
+    "小雨": "Light rain", "阵雨": "Showers", "雷阵雨": "Thundershowers",
+    "中雨": "Moderate rain", "大雨": "Heavy rain", "暴雨": "Torrential rain",
+}
+ZH_WIND = {
+    "北风": "North", "北北东": "North-northeast", "东北风": "Northeast",
+    "东北东": "East-northeast", "东风": "East", "东南东": "East-southeast",
+    "东南风": "Southeast", "南南东": "South-southeast", "南风": "South",
+    "南南西": "South-southwest", "西南风": "Southwest", "西南西": "West-southwest",
+    "西风": "West", "西北西": "West-northwest", "西北风": "Northwest",
+    "北北西": "North-northwest",
+}
+
+
+def _port_weather_risk(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Derive the dry-bulk disruption score proposed in the supplied research brief."""
+    wind = float(row.get("wind_speed_max_kn") or 0)
+    wave = float(row.get("wave_height_max_m") or 0)
+    visibility = row.get("visibility_source")
+    visibility = float(visibility) if visibility is not None else None
+    condition = str(row.get("weather_condition") or "").lower()
+    score = 2 if wind > 30 else 1 if wind > 20 else 0
+    score += 2 if wave > 4 else 1 if wave > 2 else 0
+    score += 2 if visibility is not None and visibility < 1 else 1 if visibility is not None and visibility < 5 else 0
+    score += 2 if any(x in condition for x in ("heavy rain", "torrential rain")) else 1 if any(
+        x in condition for x in ("moderate rain", "thundershower")
+    ) else 0
+    hazard_text = " ".join(str(row.get(key) or "") for key in ("warning_description", "weather_description"))
+    if re.search(r"typhoon|tropical cyclone", hazard_text, re.I):
+        score = max(score, 6)
+    level = "Severe" if score >= 6 else "High" if score >= 4 else "Moderate" if score >= 2 else "Normal"
+    impacts: List[str] = []
+    if wind > 20:
+        impacts.append("Possible crane or loading restrictions")
+    if wind > 30:
+        impacts.append("Possible berthing and pilotage restrictions")
+    if "rain" in condition or "shower" in condition:
+        impacts.append("Possible coal, ore or grain loading interruption")
+    if visibility is not None and visibility < 5:
+        impacts.append("Reduced-visibility pilotage risk")
+    if wave > 2:
+        impacts.append("Possible anchorage or berthing disruption")
+    if score >= 6:
+        impacts.append("Major port disruption risk")
+    return {
+        **row,
+        "weather_risk_score": score,
+        "weather_risk_level": level,
+        "operational_impacts": impacts,
+        "risk_methodology": (
+            "HRP Port Weather Disruption Index: supplied wind, wave and visibility thresholds; "
+            "NMC moderate/thunder rain receives 1 point and heavy/torrential rain 2 points because "
+            "this public forecast does not publish rainfall millimetres"
+        ),
+    }
 
 
 def parse_nmc_offshore(text: str) -> List[Dict[str, Any]]:
@@ -237,8 +320,91 @@ def parse_nmc_offshore(text: str) -> List[Dict[str, Any]]:
             "visibility_documented_unit": "km", "wave_category": None, "source_url": NMC_OFFSHORE,
         }
         base["severity"] = _severity(condition, wave_max, wind_max)
-        rows.extend(_port_row(base, port) for port in ports)
+        rows.extend(_port_weather_risk(_port_row(base, port)) for port in ports)
     return rows
+
+
+def parse_nmc_coastal(text: str) -> List[Dict[str, Any]]:
+    """Normalize NMC's 34-area coastal forecast and map relevant areas to dry-bulk ports."""
+    issued_match = re.search(r"(20\d{2})年(\d{1,2})月(\d{1,2})日(\d{1,2})时", text)
+    issued = datetime(*map(int, issued_match.groups()), tzinfo=timezone(timedelta(hours=8))).isoformat() if issued_match else None
+    rows: List[Dict[str, Any]] = []
+    current_area: Optional[str] = None
+    for raw_row in re.findall(r"<tr[^>]*>.*?</tr>", text, re.I | re.S):
+        name_match = re.search(r'<tr[^>]*name="([^"]+)"', raw_row, re.I)
+        cells = [_clean(cell) for cell in re.findall(r"<td[^>]*>(.*?)</td>", raw_row, re.I | re.S)]
+        if name_match:
+            current_area = name_match.group(1)
+        if current_area not in CHINA_COASTAL_AREAS or len(cells) < 5:
+            continue
+        if len(cells) == 6:
+            cells = cells[1:]
+        period, weather_zh, wind_zh, force, visibility = cells[-5:]
+        hour_values = [int(item) for item in re.findall(r"\d+", period)[:2]]
+        start_hour, end_hour = (hour_values + [12])[:2]
+        start = datetime.fromisoformat(issued) + timedelta(hours=start_hour) if issued else None
+        end = datetime.fromisoformat(issued) + timedelta(hours=end_hour) if issued else None
+        wind_min, wind_max = _beaufort_range(force)
+        area_en, ports = CHINA_COASTAL_AREAS[current_area]
+        condition = ZH_WEATHER.get(weather_zh, "Coastal forecast")
+        visibility_value = float(visibility) if re.fullmatch(r"\d+(?:\.\d+)?", visibility) else None
+        base = {
+            "provider_code": "cma", "provider": "China Meteorological Administration / NMC",
+            "country": "China", "marine_area": area_en, "issued_at": issued,
+            "valid_from": start.isoformat() if start else None, "valid_to": end.isoformat() if end else None,
+            "weather_condition": condition,
+            "weather_description": f"{condition}; {ZH_WIND.get(wind_zh, 'Variable')} wind, Beaufort {force}; visibility {visibility} km.",
+            "warning_description": None, "wind_direction_from": ZH_WIND.get(wind_zh, wind_zh),
+            "wind_direction_to": None, "wind_speed_min_kn": wind_min, "wind_speed_max_kn": wind_max,
+            "wave_height_min_m": None, "wave_height_max_m": None,
+            "visibility_source": visibility_value, "visibility_documented_unit": "km",
+            "wave_category": None, "source_url": NMC_COASTAL,
+        }
+        base["severity"] = _severity(condition, None, wind_max)
+        for port in ports:
+            if port in PORTS:
+                row = _port_row(base, port)
+                row["forecast_basis"] = f"Official NMC coastal-area forecast ({area_en}) mapped to port location"
+                rows.append(_port_weather_risk(row))
+    return rows
+
+
+def merge_china_port_forecasts(
+    offshore_rows: Iterable[Dict[str, Any]], coastal_rows: Iterable[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Prefer port-nearer coastal forecasts and enrich them with matching NMC wave data."""
+    offshore = list(offshore_rows)
+    coastal = list(coastal_rows)
+    by_port: Dict[str, List[Dict[str, Any]]] = {}
+    for row in offshore:
+        by_port.setdefault(str(row.get("location_name")), []).append(row)
+    merged: List[Dict[str, Any]] = []
+    covered: set[str] = set()
+    for row in coastal:
+        port = str(row.get("location_name"))
+        covered.add(port)
+        candidates = by_port.get(port, [])
+        target = _parse_time(row.get("valid_from"))
+        match = min(
+            candidates,
+            key=lambda item: abs(((_parse_time(item.get("valid_from")) or datetime.min.replace(tzinfo=timezone.utc)) - (target or datetime.min.replace(tzinfo=timezone.utc))).total_seconds()),
+            default=None,
+        )
+        enriched = dict(row)
+        match_time = _parse_time(match.get("valid_from")) if match else None
+        if match and target and match_time and abs((match_time - target).total_seconds()) <= 12 * 60 * 60:
+            enriched.update({
+                "wave_height_min_m": match.get("wave_height_min_m"),
+                "wave_height_max_m": match.get("wave_height_max_m"),
+                "offshore_marine_area": match.get("marine_area"),
+                "forecast_basis": (
+                    f"Official NMC coastal-area forecast ({row.get('marine_area')}) mapped to port; "
+                    f"wave height from matching NMC offshore area ({match.get('marine_area')})"
+                ),
+            })
+        merged.append(_port_weather_risk(enriched))
+    merged.extend(row for row in offshore if str(row.get("location_name")) not in covered)
+    return merged
 
 
 VIETNAM_AREAS = {
@@ -486,8 +652,20 @@ class SeaMarineWeatherManager:
             response = await client.get(SG_24H); response.raise_for_status()
             return parse_singapore(response.json())
         if provider == "cma":
-            response = await client.get(NMC_OFFSHORE); response.raise_for_status()
-            return parse_nmc_offshore(response.text)
+            offshore_response, coastal_response = await asyncio.gather(
+                client.get(NMC_OFFSHORE), client.get(NMC_COASTAL), return_exceptions=True
+            )
+            if isinstance(offshore_response, Exception) and isinstance(coastal_response, Exception):
+                raise RuntimeError(f"NMC offshore and coastal feeds failed: {offshore_response}; {coastal_response}")
+            offshore_rows: List[Dict[str, Any]] = []
+            coastal_rows: List[Dict[str, Any]] = []
+            if not isinstance(offshore_response, Exception):
+                offshore_response.raise_for_status()
+                offshore_rows = parse_nmc_offshore(offshore_response.text)
+            if not isinstance(coastal_response, Exception):
+                coastal_response.raise_for_status()
+                coastal_rows = parse_nmc_coastal(coastal_response.text)
+            return merge_china_port_forecasts(offshore_rows, coastal_rows)
         if provider == "nchmf":
             response = await client.get(NCHMF_SEA); response.raise_for_status()
             return parse_nchmf_sea(response.text)
@@ -532,7 +710,7 @@ class SeaMarineWeatherManager:
                     {"country": "Thailand", "agency": "TMD", "status": "live", "url": TMD_SHIPPING},
                     {"country": "Philippines", "agency": "PAGASA", "status": "warning-only", "url": PAGASA_GALE},
                     {"country": "Singapore", "agency": "NEA / MSS", "status": "live-regional", "url": SG_SOURCE},
-                    {"country": "China", "agency": "CMA / NMC", "status": "live-offshore", "url": NMC_OFFSHORE},
+                    {"country": "China", "agency": "CMA / NMC", "status": "live coastal + offshore wave enrichment", "url": NMC_COASTAL},
                     {"country": "Vietnam", "agency": "NCHMF", "status": "live-marine", "url": NCHMF_SEA},
                     {"country": "Brunei", "agency": "METMalaysia", "status": "official regional area mapped to Muara", "url": MET_SHIPPING},
                     {"country": "Cambodia", "agency": "TMD", "status": "official Gulf forecast mapped to Sihanoukville", "url": TMD_SHIPPING},

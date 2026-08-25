@@ -19,9 +19,11 @@ from maritime_extras import (
     fetch_weather, fetch_bunker_prices, estimate_fuel_cost,
 )
 from port_catalog import PortCatalog
-from imd_coastal_weather import ImdCoastalWeatherManager
+from imd_coastal_weather import ImdCoastalWeatherManager, expand_imd_records
 from bmkg_marine_weather import BmkgMarineWeatherManager
 from sea_marine_weather import SeaMarineWeatherManager
+from global_cyclones import GlobalCycloneManager
+from river_levels import RiverLevelManager, SOURCE_CATALOG, export_rows_csv, export_river_levels_xlsx
 from data_hub import create_data_hub_router
 
 log = logging.getLogger("ais")
@@ -122,6 +124,10 @@ BMKG_MARINE_CACHE_DIR = UPLOAD_DIR / "_bmkg_marine_weather"
 BMKG_MARINE_CACHE_PATH = BMKG_MARINE_CACHE_DIR / "latest.json"
 SEA_MARINE_CACHE_DIR = UPLOAD_DIR / "_sea_marine_weather"
 SEA_MARINE_CACHE_PATH = SEA_MARINE_CACHE_DIR / "latest.json"
+GLOBAL_CYCLONE_CACHE_DIR = UPLOAD_DIR / "_global_cyclones"
+GLOBAL_CYCLONE_CACHE_PATH = GLOBAL_CYCLONE_CACHE_DIR / "latest.json"
+RIVER_LEVEL_CACHE_DIR = UPLOAD_DIR / "_river_levels"
+RIVER_LEVEL_CACHE_PATH = RIVER_LEVEL_CACHE_DIR / "latest.json"
 
 
 def _init_ais_trail_db() -> None:
@@ -4143,6 +4149,10 @@ bmkg_marine_weather_manager = BmkgMarineWeatherManager(
     BMKG_MARINE_CACHE_PATH
 )
 sea_marine_weather_manager = SeaMarineWeatherManager(SEA_MARINE_CACHE_PATH)
+global_cyclone_manager = GlobalCycloneManager(
+    GLOBAL_CYCLONE_CACHE_PATH, ports.ports
+)
+river_level_manager = RiverLevelManager(RIVER_LEVEL_CACHE_PATH)
 
 
 @app.on_event("startup")
@@ -4174,6 +4184,18 @@ async def start_sea_marine_weather_collection():
     sea_marine_weather_manager.start()
 
 
+@app.on_event("startup")
+async def start_global_cyclone_collection():
+    """Refresh the global GDACS tropical-cyclone layer in the background."""
+    global_cyclone_manager.start()
+
+
+@app.on_event("startup")
+async def start_river_level_collection():
+    """Refresh official navigable-waterway gauges without delaying startup."""
+    river_level_manager.start()
+
+
 @app.on_event("shutdown")
 async def stop_ais_live_manager():
     await ais_live_manager.stop()
@@ -4194,12 +4216,23 @@ async def stop_sea_marine_weather_collection():
     await sea_marine_weather_manager.stop()
 
 
+@app.on_event("shutdown")
+async def stop_global_cyclone_collection():
+    await global_cyclone_manager.stop()
+
+
+@app.on_event("shutdown")
+async def stop_river_level_collection():
+    await river_level_manager.stop()
+
+
 def _imd_weather_payload(day: int) -> Dict[str, Any]:
     payload = dict(imd_coastal_weather_manager.payload)
-    payload["rows"] = [
+    raw_rows = [
         row for row in payload.get("rows", [])
         if int(row.get("day") or 0) == day
     ]
+    payload["rows"] = expand_imd_records(raw_rows)
     payload["day"] = day
     payload["last_error"] = imd_coastal_weather_manager.last_error
     return payload
@@ -4241,25 +4274,19 @@ async def export_imd_coastal_weather_csv():
                 503, f"IMD coastal weather is temporarily unavailable: {exc}"
             ) from exc
     fields = [
-        "zone_id",
-        "zone_name",
-        "day",
-        "valid_date",
-        "rainfall_category",
-        "wind_speed_min_kmph",
-        "wind_speed_max_kmph",
-        "gust_kmph",
-        "wave_height_min_m",
-        "wave_height_max_m",
-        "severity",
-        "summary",
-        "source_issue_time",
-        "source_url",
+        "provider", "provider_code", "country", "location_type", "location_id",
+        "location_name", "zone_id", "zone_name", "marine_area", "forecast_basis",
+        "latitude", "longitude", "day", "valid_date", "issued_at", "valid_from",
+        "weather_condition", "weather_description", "rainfall_category",
+        "wind_speed_min_kmph", "wind_speed_max_kmph", "gust_kmph",
+        "wave_height_min_m", "wave_height_max_m", "severity", "summary",
+        "weather_risk_score", "weather_risk_level", "operational_impacts",
+        "risk_methodology", "source_issue_time", "source_url",
     ]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(imd_coastal_weather_manager.payload.get("rows", []))
+    writer.writerows(expand_imd_records(imd_coastal_weather_manager.payload.get("rows", [])))
     return StreamingResponse(
         iter([buffer.getvalue()]),
         media_type="text/csv",
@@ -4373,6 +4400,8 @@ async def export_sea_marine_weather_csv(country: Optional[str] = Query(None)):
         "wind_speed_min_kmph", "wind_speed_max_kmph", "wave_category",
         "wave_height_min_m", "wave_height_max_m", "temperature_min_c",
         "temperature_max_c", "humidity_min_pct", "humidity_max_pct", "severity",
+        "visibility_source", "visibility_documented_unit", "offshore_marine_area",
+        "weather_risk_score", "weather_risk_level", "operational_impacts", "risk_methodology",
         "source_url",
     ]
     buffer = io.StringIO()
@@ -4384,9 +4413,62 @@ async def export_sea_marine_weather_csv(country: Optional[str] = Query(None)):
     })
 
 
+@app.get("/api/weather/cyclones")
+async def global_cyclones():
+    if not global_cyclone_manager.payload:
+        try:
+            await global_cyclone_manager.refresh(force=True)
+        except Exception as exc:
+            raise HTTPException(503, f"Global cyclone data is temporarily unavailable: {exc}") from exc
+    payload = dict(global_cyclone_manager.payload)
+    payload["last_error"] = global_cyclone_manager.last_error
+    return payload
+
+
+@app.post("/api/weather/cyclones/refresh")
+async def refresh_global_cyclones():
+    try:
+        await global_cyclone_manager.refresh(force=True)
+    except Exception as exc:
+        if not global_cyclone_manager.payload:
+            raise HTTPException(503, f"Global cyclone refresh failed: {exc}") from exc
+    payload = dict(global_cyclone_manager.payload)
+    payload["last_error"] = global_cyclone_manager.last_error
+    return payload
+
+
+@app.get("/api/weather/cyclones/export.csv")
+async def export_global_cyclones_csv():
+    if not global_cyclone_manager.payload:
+        try:
+            await global_cyclone_manager.refresh(force=True)
+        except Exception as exc:
+            raise HTTPException(503, f"Global cyclone data is temporarily unavailable: {exc}") from exc
+    fields = [
+        "provider", "source_agency", "location_id", "location_name", "event_id",
+        "alert_level", "basin", "ocean_or_sea", "latitude", "longitude",
+        "issued_at", "valid_from", "valid_to", "weather_condition",
+        "max_wind_kmph", "max_wind_kn", "movement_direction",
+        "movement_bearing_deg", "affected_countries", "possible_landfall",
+        "impact_radius_km", "affected_port_count", "affected_ports",
+        "impact_methodology", "source_url", "forecast_disclaimer",
+    ]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    for item in global_cyclone_manager.payload.get("rows", []):
+        row = dict(item)
+        for field in ("affected_countries", "affected_ports"):
+            row[field] = json.dumps(row.get(field, []), ensure_ascii=False)
+        writer.writerow(row)
+    return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv", headers={
+        "Content-Disposition": 'attachment; filename="global_active_cyclones.csv"'
+    })
+
+
 @app.get("/api/coastal-weather/export.csv")
 async def export_coastal_weather_csv(
-    source: str = Query("all", pattern="^(india|indonesia|malaysia|thailand|philippines|singapore|brunei|cambodia|myanmar|vietnam|china|sea|all|both)$"),
+    source: str = Query("all", pattern="^(india|indonesia|malaysia|thailand|philippines|singapore|brunei|cambodia|myanmar|vietnam|china|sea|cyclones|all|both)$"),
 ):
     rows: List[Dict[str, Any]] = []
     if source in {"india", "both", "all"}:
@@ -4396,20 +4478,7 @@ async def export_coastal_weather_csv(
             except Exception as exc:
                 if source == "india":
                     raise HTTPException(503, f"IMD coastal weather is unavailable: {exc}") from exc
-        for item in imd_coastal_weather_manager.payload.get("rows", []):
-            rows.append({
-                "provider": "IMD", "country": "India", "location_type": "water",
-                "location_id": item.get("zone_id"), "location_name": item.get("zone_name"),
-                "valid_from": item.get("valid_date"),
-                "weather_condition": item.get("rainfall_category"),
-                "wind_speed_min_kmph": item.get("wind_speed_min_kmph"),
-                "wind_speed_max_kmph": item.get("wind_speed_max_kmph"),
-                "gust_kmph": item.get("gust_kmph"),
-                "wave_height_min_m": item.get("wave_height_min_m"),
-                "wave_height_max_m": item.get("wave_height_max_m"),
-                "severity": item.get("severity"), "summary": item.get("summary"),
-                "source_url": item.get("source_url"),
-            })
+        rows.extend(expand_imd_records(imd_coastal_weather_manager.payload.get("rows", [])))
     if source in {"indonesia", "both", "all"}:
         if not bmkg_marine_weather_manager.payload:
             try:
@@ -4434,6 +4503,14 @@ async def export_coastal_weather_csv(
         country = sea_countries.get(source)
         sea_rows = sea_marine_weather_manager.payload.get("rows", [])
         rows.extend(row for row in sea_rows if not country or row.get("country") == country)
+    if source in {"cyclones", "all"}:
+        if not global_cyclone_manager.payload:
+            try:
+                await global_cyclone_manager.refresh(force=True)
+            except Exception as exc:
+                if not rows:
+                    raise HTTPException(503, f"Global cyclone data is unavailable: {exc}") from exc
+        rows.extend(global_cyclone_manager.payload.get("rows", []))
     fields = [
         "provider", "country", "location_type", "location_id", "location_name",
         "latitude", "longitude", "issued_at", "valid_from", "valid_to",
@@ -4447,15 +4524,115 @@ async def export_coastal_weather_csv(
         "temperature_max_c", "humidity_min_pct", "humidity_max_pct",
         "low_tide_height_m", "low_tide_time", "high_tide_height_m",
         "high_tide_time", "marine_area", "forecast_basis", "severity", "summary", "source_url",
+        "offshore_marine_area", "weather_risk_score", "weather_risk_level",
+        "operational_impacts", "risk_methodology",
+        "source_agency", "event_id", "alert_level", "basin", "ocean_or_sea",
+        "max_wind_kmph", "max_wind_kn", "movement_direction",
+        "movement_bearing_deg", "affected_countries", "possible_landfall",
+        "impact_radius_km", "affected_port_count", "affected_ports",
+        "impact_methodology", "forecast_disclaimer",
     ]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(rows)
+    for item in rows:
+        row = dict(item)
+        for field in ("affected_countries", "affected_ports", "operational_impacts"):
+            if isinstance(row.get(field), (list, dict)):
+                row[field] = json.dumps(row[field], ensure_ascii=False)
+        writer.writerow(row)
     return StreamingResponse(
         iter([buffer.getvalue()]), media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="coastal_weather_latest.csv"'},
     )
+
+
+@app.get("/api/river-levels")
+async def river_levels(
+    waterway: Optional[str] = Query(None),
+    country: Optional[str] = Query(None),
+    waterbody_type: Optional[str] = Query(None, pattern="^(river|reservoir)$"),
+    status: Optional[str] = Query(None),
+    comparison_status: Optional[str] = Query(None, pattern="^(below_normal|normal|above_normal|unavailable)$"),
+):
+    if not river_level_manager.payload:
+        try:
+            await river_level_manager.refresh(force=True)
+        except Exception as exc:
+            raise HTTPException(503, f"Official river-level sources are temporarily unavailable: {exc}") from exc
+    payload = dict(river_level_manager.payload)
+    rows = list(payload.get("rows", []))
+    if waterway:
+        needle = waterway.casefold()
+        rows = [row for row in rows if needle in str(row.get("waterbody") or "").casefold() or needle in str(row.get("basin") or "").casefold()]
+    if waterbody_type:
+        rows = [row for row in rows if row.get("waterbody_type") == waterbody_type]
+    if country:
+        rows = [row for row in rows if row.get("country") == country]
+    if status:
+        rows = [row for row in rows if row.get("status") == status]
+    if comparison_status:
+        rows = [row for row in rows if row.get("comparison_status") == comparison_status]
+    payload["rows"] = rows
+    payload["last_error"] = river_level_manager.last_error
+    return payload
+
+
+@app.post("/api/river-levels/refresh")
+async def refresh_river_levels():
+    try:
+        await river_level_manager.refresh(force=True)
+    except Exception as exc:
+        if not river_level_manager.payload:
+            raise HTTPException(503, f"Official river-level refresh failed: {exc}") from exc
+    payload = dict(river_level_manager.payload)
+    payload["last_error"] = river_level_manager.last_error
+    return payload
+
+
+@app.get("/api/river-levels/sources")
+async def river_level_sources():
+    return {"sources": SOURCE_CATALOG, "count": len(SOURCE_CATALOG)}
+
+
+@app.get("/api/river-levels/export.csv")
+async def export_river_levels_csv():
+    if not river_level_manager.payload:
+        try:
+            await river_level_manager.refresh(force=True)
+        except Exception as exc:
+            raise HTTPException(503, f"Official river-level sources are temporarily unavailable: {exc}") from exc
+    content = export_rows_csv(river_level_manager.payload.get("rows", []))
+    return StreamingResponse(iter([content]), media_type="text/csv", headers={
+        "Content-Disposition": 'attachment; filename="navigable_river_reservoir_levels.csv"'
+    })
+
+
+@app.get("/api/river-levels/export.xlsx")
+async def export_river_levels_excel(
+    waterway: Optional[str] = Query(None),
+    country: Optional[str] = Query(None),
+    waterbody_type: Optional[str] = Query(None, pattern="^(river|reservoir)$"),
+    comparison_status: Optional[str] = Query(None, pattern="^(below_normal|normal|above_normal|unavailable)$"),
+):
+    if not river_level_manager.payload:
+        try:
+            await river_level_manager.refresh(force=True)
+        except Exception as exc:
+            raise HTTPException(503, f"Official river-level sources are temporarily unavailable: {exc}") from exc
+    rows = list(river_level_manager.payload.get("rows", []))
+    if waterway:
+        rows = [row for row in rows if row.get("waterbody") == waterway]
+    if country:
+        rows = [row for row in rows if row.get("country") == country]
+    if waterbody_type:
+        rows = [row for row in rows if row.get("waterbody_type") == waterbody_type]
+    if comparison_status:
+        rows = [row for row in rows if row.get("comparison_status") == comparison_status]
+    content = export_river_levels_xlsx(river_level_manager.payload, rows)
+    return StreamingResponse(iter([content]), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={
+        "Content-Disposition": 'attachment; filename="navigable_river_reservoir_levels.xlsx"'
+    })
 
 
 @app.get("/api/ais/status")

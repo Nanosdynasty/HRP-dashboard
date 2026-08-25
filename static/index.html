@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Howe Robinson | Global Assets Map</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="/static/css/style.css?v=20260806-weather-contrast-01" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260825-river-levels-04" />
 </head>
 <body>
   <div class="app-shell">
@@ -355,7 +355,8 @@
               <span>Weather source</span>
               <select id="coastal-weather-source">
                 <option value="all" selected>All official sources</option>
-                <option value="india">India · IMD</option>
+                <option value="cyclones">Global oceans · active cyclones</option>
+                <option value="india">India · IMD coastal + ports</option>
                 <option value="indonesia">Indonesia · BMKG</option>
                 <option value="malaysia">Malaysia · METMalaysia</option>
                 <option value="thailand">Thailand · TMD</option>
@@ -365,7 +366,7 @@
                 <option value="cambodia">Cambodia · TMD Gulf forecast</option>
                 <option value="myanmar">Myanmar · TMD Andaman forecast</option>
                 <option value="vietnam">Vietnam · NCHMF</option>
-                <option value="china">China · CMA / NMC</option>
+                <option value="china">China · NMC coastal + offshore</option>
                 <option value="sea">Southeast Asia · all available</option>
               </select>
             </label>
@@ -391,6 +392,7 @@
                 <option value="all" selected>Ports + marine areas</option>
                 <option value="port">Ports only</option>
                 <option value="water">Marine areas only</option>
+                <option value="storm">Cyclones / typhoons only</option>
               </select>
             </label>
             <fieldset class="weather-parameters">
@@ -399,6 +401,7 @@
               <label><input type="checkbox" value="wind" checked /><span class="weather-param-dot wind"></span>Wind &amp; gusts</label>
               <label><input type="checkbox" value="wave" checked /><span class="weather-param-dot wave"></span>Wave height</label>
               <label><input type="checkbox" value="warning" checked /><span class="weather-param-dot warning"></span>Marine warnings</label>
+              <label><input type="checkbox" value="cyclone" checked /><span class="weather-param-dot cyclone"></span>Cyclone tracks</label>
               <label><input type="checkbox" value="current" /><span class="weather-param-dot current"></span>Currents</label>
               <label><input type="checkbox" value="visibility" /><span class="weather-param-dot visibility"></span>Visibility</label>
               <label><input type="checkbox" value="air" /><span class="weather-param-dot air"></span>Temperature &amp; humidity</label>
@@ -420,11 +423,58 @@
               Layer is switched off.
             </div>
             <p class="source-note">
-              Official IMD, BMKG, METMalaysia, TMD, PAGASA, NEA/MSS, NCHMF and CMA/NMC forecasts.
+              Official IMD, BMKG, METMalaysia, TMD, PAGASA, NEA/MSS, NCHMF and CMA/NMC forecasts, plus the global GDACS tropical-cyclone feed sourced from RSMCs/TCWCs such as JTWC and NOAA. India and China port rows map official coastal-area forecasts to trading-port locations and clearly identify the source marine area.
               Where an agency publishes sea-area rather than port forecasts, the card
               clearly identifies the official marine area used for that port.
               Forecasts are not observations or navigational advice.
             </p>
+          </div>
+        </details>
+
+        <details class="filter-section river-section" data-mode="rivers">
+          <summary>
+            <span><i class="section-icon river-icon"></i>River / reservoir levels</span>
+            <span class="section-count" id="river-layer-count">Latest gauges</span>
+          </summary>
+          <div class="river-card">
+            <p class="workspace-intro">Official and reviewed source-backed levels on commercially navigable rivers, inland-waterway corridors and trade-critical reservoirs.</p>
+            <div class="view-switch river-view-switch" aria-label="River and reservoir view">
+              <button type="button" class="active" data-river-view="map">Map</button>
+              <button type="button" data-river-view="table">Table</button>
+              <button type="button" data-river-view="cards">Cards</button>
+            </div>
+            <label class="weather-field" for="river-waterway-filter">
+              <span>Waterway</span>
+              <select id="river-waterway-filter"><option value="">All connected waterways</option></select>
+            </label>
+            <label class="weather-field" for="river-country-filter">
+              <span>Country</span>
+              <select id="river-country-filter"><option value="">All connected countries</option></select>
+            </label>
+            <label class="weather-field" for="river-type-filter">
+              <span>Waterbody type</span>
+              <select id="river-type-filter">
+                <option value="">Rivers + reservoirs</option>
+                <option value="river">Rivers only</option>
+                <option value="reservoir">Reservoirs only</option>
+              </select>
+            </label>
+            <label class="weather-field" for="river-status-filter">
+              <span>Condition</span>
+              <select id="river-status-filter">
+                <option value="">All comparisons</option>
+                <option value="below_normal">Below normal</option>
+                <option value="normal">Within normal range</option>
+                <option value="above_normal">Above normal</option>
+                <option value="unavailable">Baseline unavailable</option>
+              </select>
+            </label>
+            <div class="weather-actions">
+              <button type="button" id="river-level-refresh" class="secondary-button">Refresh now</button>
+              <a id="river-excel-download" class="secondary-button" href="/api/river-levels/export.xlsx" download>Download Excel</a>
+            </div>
+            <div id="river-level-status" class="weather-status">Open this section to load official gauges.</div>
+            <p class="source-note"><strong>Important:</strong> gauge height is not channel depth or available vessel draft. Cards retain the source datum and distinguish hydrological status from navigation restrictions.</p>
           </div>
         </details>
 
@@ -493,6 +543,26 @@
         </header>
         <div id="weather-workspace-table" class="weather-workspace-table"></div>
         <div id="weather-workspace-cards" class="weather-workspace-cards" hidden></div>
+      </section>
+      <section id="river-data-surface" class="river-data-surface" hidden>
+        <header class="river-surface-header">
+          <div>
+            <span>INLAND WATERWAY INTELLIGENCE</span>
+            <h1>River and reservoir levels</h1>
+            <p>Official and reviewed gauge observations for commercially navigable corridors</p>
+          </div>
+          <div class="river-surface-actions">
+            <label>Search<input id="river-workspace-search" type="search" placeholder="River, station or country" /></label>
+            <strong id="river-workspace-count">0 gauges</strong>
+          </div>
+        </header>
+        <div id="river-kpis" class="river-kpis"></div>
+        <div id="river-workspace-table" class="river-workspace-table"></div>
+        <div id="river-workspace-cards" class="river-workspace-cards" hidden></div>
+        <details class="river-source-directory">
+          <summary>Source directory, lineage and planned connectors</summary>
+          <div id="river-source-list" class="river-source-list"></div>
+        </details>
       </section>
       <header id="coal-workspace-header" class="coal-workspace-header" hidden>
         <div>
@@ -781,12 +851,13 @@
         <span><i class="asset-key"></i>Selected asset</span>
         <span><i class="ais-key"></i>Live AIS vessel</span>
         <span class="weather-key-item" hidden><i class="weather-key"></i>Coastal weather</span>
+        <span class="river-key-item" hidden><i class="river-key"></i>River / reservoir gauge</span>
         <span><i class="route-key"></i>Voyage route</span>
       </div>
     </main>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/js/app.js?v=20260806-weather-contrast-01"></script>
+  <script src="/static/js/app.js?v=20260825-river-levels-04"></script>
 </body>
 </html>

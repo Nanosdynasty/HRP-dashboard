@@ -140,6 +140,44 @@ ZONE_ALIAS_LOOKUP = sorted(
 )
 
 
+# Port points are display anchors for official IMD coastal-area forecasts. They
+# are not represented as observations at the port itself.
+INDIA_COASTAL_PORTS: Dict[str, List[tuple[str, float, float]]] = {
+    "north_gujarat": [
+        ("Deendayal (Kandla)", 23.03, 70.22), ("Mundra", 22.74, 69.70),
+    ],
+    "south_gujarat": [("Dahej", 21.70, 72.58), ("Hazira", 21.11, 72.65)],
+    "north_maharashtra": [
+        ("Mumbai", 18.95, 72.84), ("JNPA (Nhava Sheva)", 18.95, 72.95),
+    ],
+    "south_maharashtra_goa": [
+        ("Jaigarh", 17.30, 73.22), ("Mormugao", 15.41, 73.80),
+    ],
+    "karnataka": [
+        ("New Mangalore", 12.93, 74.81), ("Karwar", 14.82, 74.12),
+    ],
+    "north_kerala": [("Beypore", 11.17, 75.80)],
+    "south_kerala": [("Kochi", 9.97, 76.26), ("Vizhinjam", 8.38, 76.99)],
+    "north_tamil_nadu": [
+        ("Chennai", 13.09, 80.30), ("Kamarajar (Ennore)", 13.25, 80.33),
+        ("Kattupalli", 13.31, 80.35),
+    ],
+    "south_tamil_nadu": [
+        ("V.O. Chidambaranar (Tuticorin)", 8.76, 78.20),
+        ("Karaikal", 10.84, 79.86),
+    ],
+    "north_andhra": [
+        ("Visakhapatnam", 17.69, 83.30), ("Gangavaram", 17.63, 83.24),
+        ("Kakinada", 16.95, 82.28),
+    ],
+    "south_andhra": [("Krishnapatnam", 14.25, 80.13)],
+    "north_odisha": [("Paradip", 20.26, 86.68), ("Dhamra", 20.82, 86.95)],
+    "south_odisha": [("Gopalpur", 19.27, 84.92)],
+    "west_bengal": [("Haldia", 22.03, 88.06), ("Kolkata", 22.55, 88.30)],
+    "andaman": [("Port Blair", 11.67, 92.74)],
+}
+
+
 def _blank_record(zone_id: str, day: int) -> Dict[str, Any]:
     zone = ZONES[zone_id]
     return {
@@ -159,6 +197,100 @@ def _blank_record(zone_id: str, day: int) -> Dict[str, Any]:
         "source_issue_time": None,
         "geometry": zone["geometry"],
     }
+
+
+def _has_published_weather(record: Dict[str, Any]) -> bool:
+    return any(record.get(field) is not None for field in (
+        "rainfall_category", "wind_speed_min_kmph", "wind_speed_max_kmph",
+        "gust_kmph", "wave_height_min_m", "wave_height_max_m",
+    ))
+
+
+def _port_weather_risk(record: Dict[str, Any]) -> Dict[str, Any]:
+    wind_kmph = max(float(record.get("gust_kmph") or 0), float(record.get("wind_speed_max_kmph") or 0))
+    wind_kn = wind_kmph / KNOT_TO_KMPH
+    wave = float(record.get("wave_height_max_m") or 0)
+    rain = str(record.get("rainfall_category") or "").lower()
+    score = 2 if wind_kn > 30 else 1 if wind_kn > 20 else 0
+    score += 2 if wave > 4 else 1 if wave > 2 else 0
+    score += 2 if any(x in rain for x in ("extremely heavy", "very heavy", "heavy")) else 1 if any(
+        x in rain for x in ("widespread", "many places", "thunder")
+    ) else 0
+    level = "Severe" if score >= 6 else "High" if score >= 4 else "Moderate" if score >= 2 else "Normal"
+    impacts: List[str] = []
+    if wind_kn > 20:
+        impacts.append("Possible crane or loading restrictions")
+    if wind_kn > 30:
+        impacts.append("Possible berthing and pilotage restrictions")
+    if record.get("rainfall_category"):
+        impacts.append("Possible coal, ore or grain loading interruption")
+    if wave > 2:
+        impacts.append("Possible anchorage or berthing disruption")
+    return {
+        "weather_risk_score": score,
+        "weather_risk_level": level,
+        "operational_impacts": impacts,
+        "risk_methodology": (
+            "HRP Port Weather Disruption Index using published IMD wind, gust, wave "
+            "and qualitative rainfall fields; IMD visibility is not quantified in this feed"
+        ),
+    }
+
+
+def expand_imd_records(records: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return shared-schema marine-area and port rows for the weather UI."""
+    output: List[Dict[str, Any]] = []
+    for record in records:
+        if not _has_published_weather(record):
+            continue
+        zone_id = str(record["zone_id"])
+        zone_name = str(record["zone_name"])
+        common = {
+            **record,
+            "provider_code": "imd",
+            "provider": "India Meteorological Department",
+            "country": "India",
+            "issued_at": record.get("source_issue_time"),
+            "valid_from": record.get("valid_date"),
+            "valid_to": None,
+            "weather_condition": record.get("rainfall_category") or "Coastal forecast",
+            "weather_description": record.get("summary"),
+            "warning_description": None,
+            "marine_area": zone_name,
+            "wind_direction_from": None,
+            "wind_direction_to": None,
+            "wave_category": None,
+            "forecast_day": record.get("day"),
+        }
+        area = {
+            **common,
+            "location_type": "water",
+            "location_id": f"imd-area-{zone_id}",
+            "location_name": zone_name,
+            "latitude": None,
+            "longitude": None,
+            "forecast_basis": "Official IMD coastal-area forecast polygon",
+        }
+        output.append(area)
+        for port_name, latitude, longitude in INDIA_COASTAL_PORTS.get(zone_id, []):
+            slug = re.sub(r"[^a-z0-9]+", "-", port_name.lower()).strip("-")
+            port = {
+                **common,
+                **_port_weather_risk(record),
+                "location_type": "port",
+                "location_id": f"imd-port-{slug}",
+                "location_name": port_name,
+                "latitude": latitude,
+                "longitude": longitude,
+                "geometry": None,
+                "port_type": "Trading port",
+                "forecast_basis": (
+                    f"Official IMD coastal-area forecast ({zone_name}) mapped to port location; "
+                    "not a port observation"
+                ),
+            }
+            output.append(port)
+    return output
 
 
 def _html_to_text(value: str) -> str:
