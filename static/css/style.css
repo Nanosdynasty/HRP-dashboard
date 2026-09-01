@@ -657,6 +657,9 @@ button, summary, label, select { -webkit-tap-highlight-color: transparent; }
 .weather-tooltip small { display: block; margin-top: 7px; color: var(--muted); font-size: 8px; line-height: 1.4; }
 .weather-tooltip a { color: var(--hrp-blue); }
 .weather-symbol-marker { z-index: 1; background: transparent; border: 0; cursor: pointer; }
+.river-map-marker-shell { display: grid; width: 28px !important; height: 28px !important; place-items: center; background: transparent; border: 0; cursor: pointer; }
+.river-map-marker { display: block; width: var(--river-marker-size, 14px); height: var(--river-marker-size, 14px); border: 2px solid #fff; border-radius: 50%; background: var(--river-marker-color, #1976a3); box-shadow: 0 1px 5px rgba(14, 35, 53, .45); transition: transform .15s ease, box-shadow .15s ease; }
+.river-map-marker-shell:hover .river-map-marker, .river-map-marker-shell:focus .river-map-marker { transform: scale(1.35); box-shadow: 0 0 0 4px color-mix(in srgb, var(--river-marker-color, #1976a3) 24%, transparent), 0 2px 8px rgba(14, 35, 53, .5); }
 .weather-cyclone {
   display: inline-flex;
   width: 34px;

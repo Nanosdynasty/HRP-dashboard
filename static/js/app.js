@@ -1583,9 +1583,20 @@ function renderRiverLevels() {
     const lat = Number(row.latitude); const lon = Number(row.longitude);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
     const color = riverConditionColor(row.comparison_status);
-    const marker = L.circleMarker([lat, lon], {
-      radius: row.waterbody_type === "reservoir" ? 7 : 5.5,
-      color: "#fff", weight: 1.3, fillColor: color, fillOpacity: 0.95
+    // Use a DOM marker rather than Leaflet's canvas circle renderer.  Canvas
+    // points have a very small hit area and can sit below other canvas layers,
+    // making a visible gauge unexpectedly hard to select.
+    const radius = row.waterbody_type === "reservoir" ? 8 : 7;
+    const marker = L.marker([lat, lon], {
+      icon: L.divIcon({
+        className: "river-map-marker-shell",
+        html: `<span class="river-map-marker" style="--river-marker-color:${escapeAttr(color)};--river-marker-size:${radius * 2}px" aria-hidden="true"></span>`,
+        iconSize: [28, 28],
+        iconAnchor: [14, 14],
+      }),
+      keyboard: true,
+      title: `${row.station || "River gauge"} · ${row.waterbody || ""}`,
+      riseOnHover: true,
     });
     marker.bindTooltip(`<strong>${escapeHtml(row.station)}</strong><br>${escapeHtml(row.waterbody)} · ${escapeHtml(row.country)}<br>Current ${escapeHtml(riverValue(row.level, row.level_unit))}<br>${escapeHtml(riverComparisonLabel(row))}`, { className: "weather-leaflet-tooltip", direction: "top" });
     marker.on("click", () => showRiverLevelCard(row));
