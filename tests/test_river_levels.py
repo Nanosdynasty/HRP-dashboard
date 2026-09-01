@@ -78,13 +78,13 @@ class RiverLevelTests(unittest.TestCase):
         river = _three_gorges_yichang_record()
         self.assertEqual(reservoir["country"], "China")
         self.assertEqual(reservoir["waterbody_type"], "reservoir")
-        self.assertEqual(reservoir["observed_at"], "2026-04-30T00:00:00+08:00")
-        self.assertAlmostEqual(reservoir["level"], 164.69)
-        self.assertEqual(reservoir["normal_basis"], "Historical April distribution, 2020–2025")
+        self.assertEqual(reservoir["observed_at"], "2026-07-31T00:00:00+08:00")
+        self.assertAlmostEqual(reservoir["level"], 151.22)
+        self.assertEqual(reservoir["normal_basis"], "Historical July distribution, 2020–2025")
         self.assertGreater(len(reservoir["history"]), 2200)
         self.assertEqual(river["waterbody"], "Yangtze River")
         self.assertEqual(river["waterbody_type"], "river")
-        self.assertAlmostEqual(river["level"], 43.07)
+        self.assertAlmostEqual(river["level"], 43.41)
         self.assertIn("Yichang", river["quality_note"])
 
 

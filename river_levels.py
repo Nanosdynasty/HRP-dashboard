@@ -207,7 +207,7 @@ SOURCE_CATALOG: List[Dict[str, Any]] = [
     {
         "id": "three-gorges-watch", "region": "China", "waterways": "Yangtze / Three Gorges Reservoir",
         "authority": "Probe International Reservoir Watch", "access": "User-supplied extracted workbook with row-level source lineage",
-        "status": "connected", "frequency": "Daily observations; latest extracted record 30 April 2026",
+        "status": "connected", "frequency": "Daily observations; latest extracted record July 2026",
         "metrics": "Upstream and downstream level, inflow and outflow", "url": THREE_GORGES_SOURCE_PAGE,
     },
     {
@@ -689,7 +689,7 @@ def _three_gorges_record(path: Path = THREE_GORGES_DATA_PATH) -> Dict[str, Any]:
         "gauge_datum": "Reservoir surface elevation in metres, as stated by the source workbook",
         "quality_note": (
             "Historical extracted series, not a live official Chinese telemetry feed. Latest usable record is "
-            f"{latest['date']}; May 2023 and May–July 2026 are documented source gaps."
+            f"{latest['date']}; May 2023 is a documented source gap."
         ),
         "history": history,
         "extra_metrics": {
