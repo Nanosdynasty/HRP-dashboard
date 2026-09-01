@@ -1142,6 +1142,7 @@ button, summary, label, select { -webkit-tap-highlight-color: transparent; }
 .port-disruption-workspace { padding: 18px 24px 30px; }
 .disruption-methodology { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-left: 4px solid #174f82; background: #eff6fa; color: #31495b; font-size: 11px; line-height: 1.5; }
 .disruption-methodology strong { color: #123f6a; white-space: nowrap; }
+.disruption-methodology button { margin-left: auto; padding: 7px 10px; border: 1px solid #174f82; color: #174f82; background: #fff; font-size: 9px; font-weight: 800; cursor: pointer; }
 .disruption-empty { margin: 15px 0; padding: 22px; border: 1px solid #dbe5ea; background: #fff; }
 .disruption-empty h2 { margin: 0 0 7px; color: #203149; font-size: 16px; }
 .disruption-empty p { margin: 0; color: #5d6e79; font-size: 11px; line-height: 1.5; }
@@ -1155,7 +1156,30 @@ button, summary, label, select { -webkit-tap-highlight-color: transparent; }
 .disruption-port-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: auto 0 11px; }
 .disruption-port-tags span { padding: 4px 6px; background: #f0f4f6; color: #385466; font-size: 8px; }
 .disruption-source-card a { align-self: flex-start; color: #174f82; font-size: 9px; font-weight: 800; text-decoration: none; }
-@media (max-width: 720px) { .port-disruption-workspace { padding: 12px; } .disruption-methodology { display: block; } .disruption-methodology strong { display: block; margin-bottom: 4px; } }
+.disruption-active-card { padding: 16px; border-top: 4px solid #d8861a; background: #fff; box-shadow: 0 5px 18px rgba(27,45,56,.1); }
+.disruption-active-card.status-suspended, .disruption-active-card.status-closed { border-top-color: #c93036; }
+.disruption-active-card header { display: flex; justify-content: space-between; gap: 12px; }
+.disruption-active-card header span { color: #4c7189; font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.disruption-active-card h2 { margin: 4px 0 0; color: #1e3148; font-size: 18px; }
+.disruption-active-card header p { margin: 2px 0 0; color: #617687; font-size: 10px; }
+.disruption-active-card header b { height: fit-content; padding: 5px 7px; color: #77480c; background: #fff2df; font-size: 8px; text-transform: uppercase; }
+.disruption-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin-top: 13px; background: #dfe6e9; }
+.disruption-detail-grid div { padding: 9px; background: #f6f8f9; }
+.disruption-detail-grid span { display: block; color: #71818c; font-size: 7px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+.disruption-detail-grid strong { display: block; margin-top: 4px; color: #203149; font-size: 10px; line-height: 1.4; }
+.disruption-summary { margin: 12px 0; color: #4b5f6e; font-size: 10px; line-height: 1.5; }
+.disruption-card-actions { display: flex; gap: 8px; align-items: center; }
+.disruption-card-actions button, .disruption-card-actions a { padding: 7px 10px; border: 1px solid #174f82; color: #174f82; background: #fff; font-size: 8px; font-weight: 800; text-decoration: none; cursor: pointer; }
+.disruption-source-details { margin-top: 16px; background: #fff; border: 1px solid #dbe5ea; }
+.disruption-source-details summary { display: flex; justify-content: space-between; cursor: pointer; padding: 13px 15px; color: #1f405c; }
+.disruption-source-details summary b { display: block; font-size: 8px; letter-spacing: .1em; }
+.disruption-source-details summary strong { display: block; margin-top: 3px; font-size: 12px; }
+.disruption-source-details summary small { align-self: center; font-size: 9px; }
+.disruption-source-details .disruption-source-grid { padding: 0 15px 15px; }
+.port-disruption-marker { background: transparent; border: 0; }
+.port-disruption-marker > span { display: grid; width: 30px; height: 30px; place-items: center; border: 3px solid #fff; border-radius: 50%; background: var(--disruption-color); box-shadow: 0 0 0 4px color-mix(in srgb, var(--disruption-color) 32%, transparent), 0 2px 7px rgba(16,34,49,.38); }
+.port-disruption-marker i { color: #fff; font-family: Arial, sans-serif; font-size: 18px; font-style: normal; font-weight: 900; }
+@media (max-width: 720px) { .port-disruption-workspace { padding: 12px; } .disruption-methodology { display: block; } .disruption-methodology strong { display: block; margin-bottom: 4px; } .disruption-methodology button { margin: 10px 0 0; } .disruption-detail-grid { grid-template-columns: 1fr; } }
 .weather-empty-state { padding: 36px; color: var(--muted); background: #fff; text-align: center; }
 @media (max-width: 900px) {
   .weather-surface-header { align-items: stretch; flex-direction: column; padding: 16px; }

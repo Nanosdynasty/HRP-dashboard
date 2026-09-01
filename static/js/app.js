@@ -170,6 +170,7 @@ const state = {
   selectedAisMmsi: null,
   weatherLayer: null,
   weatherSymbolLayer: null,
+  portDisruptionLayer: null,
   coastalWeatherEnabled: false,
   coastalWeatherRows: [],
   coastalWeatherSource: "all",
@@ -185,6 +186,7 @@ const state = {
   coastalWeatherLoading: false,
   coastalWeatherPendingReload: false,
   portDisruptions: null,
+  portDisruptionMapVisible: false,
   weatherPortTierCache: new Map(),
   riverLayer: null,
   riverRows: [],
@@ -246,6 +248,7 @@ async function init() {
   state.routeLayer = L.layerGroup().addTo(state.map);
   state.weatherLayer = L.layerGroup();
   state.weatherSymbolLayer = L.layerGroup();
+  state.portDisruptionLayer = L.layerGroup();
   state.riverLayer = L.layerGroup();
   state.map.on("zoomend", () => {
     renderPorts();
@@ -1749,6 +1752,40 @@ function setCoastalWeatherView(view) {
   else if (view === "map") setTimeout(() => state.map.invalidateSize(), 0);
 }
 
+function showPortDisruptionsOnMap() {
+  state.portDisruptionMapVisible = true;
+  setCoastalWeatherView("map");
+  renderPortDisruptionMarkers();
+  const notices = state.portDisruptions?.active_notices || [];
+  if (notices.length) {
+    const bounds = L.latLngBounds(notices.map(notice => [Number(notice.latitude), Number(notice.longitude)]));
+    state.map.fitBounds(bounds.pad(0.55), { maxZoom: 7 });
+  }
+}
+
+function renderPortDisruptionMarkers() {
+  if (!state.portDisruptionLayer) return;
+  state.portDisruptionLayer.clearLayers();
+  if (!state.portDisruptionMapVisible) return;
+  const notices = state.portDisruptions?.active_notices || [];
+  notices.forEach(notice => {
+    if (!Number.isFinite(Number(notice.latitude)) || !Number.isFinite(Number(notice.longitude))) return;
+    const isRed = notice.severity === "red" || /closed|suspend/i.test(notice.status || "");
+    const color = isRed ? "#c93036" : "#d8861a";
+    const marker = L.marker([Number(notice.latitude), Number(notice.longitude)], {
+      title: `${notice.port_name}: ${notice.status}`,
+      icon: L.divIcon({
+        className: "port-disruption-marker",
+        html: `<span style="--disruption-color:${color}"><i>!</i></span>`,
+        iconSize: [38, 38], iconAnchor: [19, 19]
+      })
+    }).bindTooltip(`<strong>${escapeHtml(notice.port_name)}</strong><br>${escapeHtml(notice.status)} · ${escapeHtml(notice.cause)}<br>Click for the verified notice`, { className: "weather-leaflet-tooltip" });
+    marker.on("click", () => showPortDisruptionDetail(notice));
+    marker.addTo(state.portDisruptionLayer);
+  });
+  if (notices.length && !state.map.hasLayer(state.portDisruptionLayer)) state.portDisruptionLayer.addTo(state.map);
+}
+
 async function loadPortDisruptions() {
   const workspace = document.getElementById("port-disruption-workspace");
   if (!workspace) return;
@@ -1758,6 +1795,7 @@ async function loadPortDisruptions() {
       const response = await fetch("/api/port-disruptions");
       if (!response.ok) throw new Error("Source registry is unavailable");
       state.portDisruptions = await response.json();
+      renderPortDisruptionMarkers();
     } catch (error) {
       workspace.innerHTML = `<div class="weather-empty-state">${escapeHtml(error.message)}</div>`;
       return;
@@ -1772,18 +1810,35 @@ function renderPortDisruptions() {
   if (!workspace || !data) return;
   const active = Array.isArray(data.active_notices) ? data.active_notices : [];
   document.getElementById("weather-surface-subtitle").textContent =
-    `Key China and Southeast Asian ports · ${active.length} verified active notices`;
+    `Verified active notices, disruption causes and operating effects · ${active.length} active records`;
   document.getElementById("weather-workspace-count").textContent =
     `${data.source_count || 0} monitored sources`;
   workspace.innerHTML = `
-    <section class="disruption-methodology"><strong>Verified operating status only</strong><span>${escapeHtml(data.methodology || "")}</span></section>
-    ${active.length ? `<section class="disruption-active-grid">${active.map(notice => `<article class="disruption-active-card"><b>${escapeHtml(notice.port_name)}</b><span>${escapeHtml(notice.status)}</span><p>${escapeHtml(notice.summary || "")}</p></article>`).join("")}</section>` : `<section class="disruption-empty"><h2>No verified active port-disruption notices in the connected registry</h2><p>${escapeHtml(data.disclaimer || "")}</p></section>`}
-    <section class="disruption-source-grid">${(data.sources || []).map(source => `<article class="disruption-source-card">
+    <section class="disruption-methodology"><strong>Verified operating status only</strong><span>${escapeHtml(data.methodology || "")}</span><button type="button" id="show-disruptions-map">Show active ports on map</button></section>
+    ${active.length ? `<section class="disruption-active-grid">${active.map(notice => `<article class="disruption-active-card status-${escapeAttr(String(notice.status || "advisory").toLowerCase())}">
+      <header><div><span>${escapeHtml(notice.evidence_type)}</span><h2>${escapeHtml(notice.port_name)}</h2><p>${escapeHtml(notice.country || "")}</p></div><b>${escapeHtml(notice.status)}</b></header>
+      <div class="disruption-detail-grid"><div><span>What is happening</span><strong>${escapeHtml(notice.cause || "Not stated")}</strong></div><div><span>Operational effect</span><strong>${escapeHtml(notice.operational_effect || "Not stated")}</strong></div><div><span>Issued / checked</span><strong>${escapeHtml(notice.issued_at ? new Date(notice.issued_at).toLocaleString() : "Not published")}</strong></div><div><span>Closure status</span><strong>${notice.is_port_closure ? "Confirmed closure" : "Not a confirmed closure"}</strong></div></div>
+      <p class="disruption-summary">${escapeHtml(notice.summary || "")}</p><div class="disruption-card-actions"><button type="button" data-disruption-notice="${escapeAttr(notice.notice_id)}">Open details</button><a href="${escapeAttr(notice.source_url)}" target="_blank" rel="noopener">Open source</a></div>
+    </article>`).join("")}</section>` : `<section class="disruption-empty"><h2>No verified active port-disruption notices in the connected registry</h2><p>${escapeHtml(data.disclaimer || "")}</p></section>`}
+    <details class="disruption-source-details"><summary><span><b>MONITORED COVERAGE</b><strong>${(data.sources || []).length} authority, terminal and carrier sources</strong></span><small>Expand source catalogue</small></summary><section class="disruption-source-grid">${(data.sources || []).map(source => `<article class="disruption-source-card">
       <header><span>${escapeHtml(source.region)}</span><b>${escapeHtml(source.evidence_type)}</b></header>
       <h2>${escapeHtml(source.authority)}</h2><p class="disruption-country">${escapeHtml(source.country)} · ${escapeHtml(source.feed_kind)}</p>
       <p>${escapeHtml(source.coverage)}</p><div class="disruption-port-tags">${(source.ports || []).map(port => `<span>${escapeHtml(port)}</span>`).join("")}</div>
       <a href="${escapeAttr(source.url)}" target="_blank" rel="noopener">Open source</a>
-    </article>`).join("")}</section>`;
+    </article>`).join("")}</section></details>`;
+  document.getElementById("show-disruptions-map")?.addEventListener("click", showPortDisruptionsOnMap);
+  document.querySelectorAll("[data-disruption-notice]").forEach(button => button.addEventListener("click", () => {
+    const notice = active.find(item => item.notice_id === button.dataset.disruptionNotice);
+    if (notice) showPortDisruptionDetail(notice);
+  }));
+}
+
+function showPortDisruptionDetail(notice) {
+  const card = document.getElementById("port-card");
+  card.classList.remove("port-spec-card", "weather-detail-card");
+  card.classList.add("weather-detail-card", "disruption-detail-card");
+  document.getElementById("port-card-content").innerHTML = `<span class="detail-eyebrow">VERIFIED ${escapeHtml(notice.evidence_type || "NOTICE")}</span><h2>${escapeHtml(notice.port_name)}</h2><p class="detail-meta">${escapeHtml(notice.country || "")} · ${escapeHtml(notice.issued_at ? new Date(notice.issued_at).toLocaleString() : "Issue time not published")}</p><div class="weather-card-severity severity-${notice.severity === "red" ? "warning" : "advisory"}">${escapeHtml(notice.status || "Advisory")}</div><div class="detail-grid weather-detail-grid">${detailCell("What is happening", notice.cause || "Not stated")}${detailCell("Operational effect", notice.operational_effect || "Not stated")}${detailCell("Closure status", notice.is_port_closure ? "Confirmed closure" : "Not a confirmed closure")}${detailCell("Source freshness", notice.source_freshness || "Not stated")}</div><p class="weather-card-summary">${escapeHtml(notice.summary || "")}</p><a class="official-port-link weather-source-link" href="${escapeAttr(notice.source_url)}" target="_blank" rel="noopener">Open verified source</a><p class="detail-note">This card reports the source notice as an advisory or restriction. It does not infer berth closure, vessel delay or cargo impact beyond the text issued by the source.</p>`;
+  card.classList.add("open"); card.setAttribute("aria-hidden", "false");
 }
 
 function updateCoastalWeatherDownload() {

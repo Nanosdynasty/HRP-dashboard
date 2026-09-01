@@ -9,6 +9,8 @@ current closure or delay.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import html
+import re
 from typing import Any, Dict, List
 
 
@@ -90,11 +92,57 @@ PORT_DISRUPTION_SOURCES: List[Dict[str, Any]] = [
 ]
 
 
-def port_disruption_payload() -> Dict[str, Any]:
-    """Return the transparent source inventory with no inferred active events."""
+_MPA_URL = "https://www.mpa.gov.sg/home?level=1"
+_NOTICE_PATTERN = re.compile(r"<a\b[^>]*>(.*?)</a>", re.I | re.S)
+_INCIDENT_TERMS = re.compile(r"maintenance|survey|works|restriction|suspend|closure|closed|typhoon|cyclone|delay|disruption", re.I)
+
+
+async def _mpa_notices() -> List[Dict[str, Any]]:
+    """Extract current operational MPA headlines without inferring a closure."""
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=12, follow_redirects=True, headers={"User-Agent": "HRP-Port-Disruption-Monitor/1.0"}) as client:
+            response = await client.get(_MPA_URL)
+            response.raise_for_status()
+    except Exception:
+        return []
+    matches = []
+    for raw in _NOTICE_PATTERN.findall(response.text):
+        headline = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", raw))).strip(" -:\u00a0")
+        if not re.search(r"PORT\s+MARINE\s+NOTICE", headline, re.I):
+            continue
+        if not _INCIDENT_TERMS.search(headline):
+            continue
+        lower = headline.lower()
+        status = "Suspended" if re.search(r"suspend|closure|closed", lower) else "Restricted" if "restriction" in lower else "Advisory"
+        cause = "Port-marine notice"
+        if "maintenance" in lower:
+            cause = "Planned system or marine maintenance"
+        elif "survey" in lower or "works" in lower:
+            cause = "Marine works or survey activity"
+        effect = (
+            "Use the authority notice for local navigation and operational instructions. This is not a port closure."
+            if status == "Advisory" else "Operating restriction reported by the port authority; verify the notice before voyage decisions."
+        )
+        matches.append({
+            "notice_id": f"mpa-{abs(hash(headline))}", "port_name": "Singapore", "country": "Singapore",
+            "latitude": 1.2644, "longitude": 103.8200, "status": status, "severity": "amber" if status != "Suspended" else "red",
+            "cause": cause, "summary": headline, "operational_effect": effect,
+            "issued_at": datetime.now(timezone.utc).isoformat(), "evidence_type": "Authority notice",
+            "source_name": "Maritime and Port Authority of Singapore", "source_url": _MPA_URL,
+            "source_freshness": "Live page check", "is_port_closure": False,
+        })
+        if len(matches) >= 3:
+            break
+    return matches
+
+
+async def port_disruption_payload() -> Dict[str, Any]:
+    """Return active attributable notices and the transparent source inventory."""
+    active = await _mpa_notices()
     return {
         "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "active_notices": [],
+        "active_notices": active,
         "sources": PORT_DISRUPTION_SOURCES,
         "source_count": len(PORT_DISRUPTION_SOURCES),
         "methodology": (
@@ -102,7 +150,7 @@ def port_disruption_payload() -> Dict[str, Any]:
             "Weather alerts and proximity models do not create a port closure or restriction."
         ),
         "disclaimer": (
-            "No automatic current closure is asserted by this source registry. Open the linked source or "
-            "connect an approved notice feed before treating a port as operationally disrupted."
+            "Only the live Singapore MPA connector is currently machine-parsed. Other listed sources are "
+            "authoritative watch sources pending their feed-specific adapters; no closure is inferred from weather."
         ),
     }

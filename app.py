@@ -5041,17 +5041,24 @@ async def coastal_weather_sources():
 @app.get("/api/port-disruptions")
 async def port_disruptions():
     """Official / attributable operating-notice source registry for key ports."""
-    return port_disruption_payload()
+    return await port_disruption_payload()
 
 
 @app.get("/api/port-disruptions/export.csv")
 async def export_port_disruptions_csv():
     """Export the source watchlist and any verified active notices, never inferred risks."""
-    payload = port_disruption_payload()
+    payload = await port_disruption_payload()
     buffer = io.StringIO()
-    fields = ["record_type", "country", "region", "authority", "evidence_type", "feed_kind", "ports", "coverage", "url"]
+    fields = ["record_type", "port_name", "status", "cause", "operational_effect", "issued_at", "source_name", "country", "region", "authority", "evidence_type", "feed_kind", "ports", "coverage", "url"]
     writer = csv.DictWriter(buffer, fieldnames=fields)
     writer.writeheader()
+    for notice in payload["active_notices"]:
+        writer.writerow({
+            "record_type": "active_notice", "port_name": notice.get("port_name"), "status": notice.get("status"),
+            "cause": notice.get("cause"), "operational_effect": notice.get("operational_effect"),
+            "issued_at": notice.get("issued_at"), "source_name": notice.get("source_name"),
+            "country": notice.get("country"), "evidence_type": notice.get("evidence_type"), "url": notice.get("source_url"),
+        })
     for source in payload["sources"]:
         writer.writerow({
             "record_type": "source_watchlist", "country": source["country"], "region": source["region"],
