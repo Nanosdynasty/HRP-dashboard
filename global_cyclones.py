@@ -22,7 +22,7 @@ from shapely.geometry import mapping, shape
 
 log = logging.getLogger("global-cyclones")
 REFRESH_SECONDS = 60 * 60
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 USER_AGENT = "HRP-Dashboard/1.0 (global tropical cyclone visualization)"
 GDACS_SEARCH = "https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH"
 
@@ -158,9 +158,25 @@ def _impact_radius(max_wind_kmph: float) -> int:
     return 180
 
 
+def _is_terminal_asset(port: Dict[str, Any]) -> bool:
+    """Exclude specialist terminal/anchorage assets from cyclone port impacts."""
+    if port.get("specialist_terminal") is True:
+        return True
+    name = str(port.get("name") or "")
+    harbor_type = str(port.get("harbor_type") or "")
+    port_id = str(port.get("id") or "")
+    return bool(
+        re.search(r"\bterminal\b", name, flags=re.I)
+        or re.search(r"\bspecialist\s+.*terminal\b", harbor_type, flags=re.I)
+        or port_id.lower().startswith(("gem-terminal-", "gem-coal-"))
+    )
+
+
 def _affected_ports(ports: Iterable[Dict[str, Any]], track: Sequence[Sequence[float]], radius_km: int) -> List[Dict[str, Any]]:
     matches: List[Dict[str, Any]] = []
     for port in ports:
+        if _is_terminal_asset(port):
+            continue
         lat, lon = _number(port.get("lat")), _number(port.get("lon"))
         if lat is None or lon is None:
             continue

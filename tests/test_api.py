@@ -3,7 +3,9 @@ import io
 from unittest.mock import AsyncMock, patch
 
 import pandas as pd
+import app as app_module
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 
 from app import (
     AisLiveManager,
@@ -15,6 +17,7 @@ from app import (
     _route_with_endpoints,
     _transform_npp_power,
     app,
+    sea_marine_weather_manager,
 )
 
 
@@ -30,6 +33,19 @@ class PortApiTests(unittest.TestCase):
         self.assertEqual(payload["version"], "4.0.0")
         self.assertGreaterEqual(payload["ports"]["total"], 3_600)
         self.assertIn("ais_configured", payload)
+        self.assertEqual(payload["ais_retention_days"], 90)
+        self.assertIn("external_path_configured", payload["storage"])
+        self.assertIn("configured", payload["admin_write_protection"])
+        self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+        self.assertIn("default-src 'self'", response.headers["content-security-policy"])
+
+    def test_admin_write_endpoint_rejects_missing_token_when_configured(self):
+        with patch.object(app_module, "ADMIN_API_TOKEN", "test-admin-secret"), patch.object(
+            app_module, "REQUIRE_ADMIN_TOKEN", True
+        ):
+            response = self.client.post("/api/river-levels/refresh")
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("Administrator token", response.json()["detail"])
 
     def test_facets_and_filtered_port_list(self):
         facets = self.client.get("/api/ports/facets")
@@ -135,6 +151,8 @@ class PortApiTests(unittest.TestCase):
             "[state.aisLayer, state.aisTrailLayer, state.routeLayer]",
             activate_mode,
         )
+        self.assertIn("child.inert = !section.open", javascript)
+        self.assertNotIn("local_llm_url", javascript)
 
     def test_layer_facets_support_country_status_and_terminal_role_filters(self):
         energy = self.client.get(
@@ -636,7 +654,17 @@ class PortApiTests(unittest.TestCase):
         self.assertIn("Coal stock availability", html)
         self.assertIn("Cumulative generation", html)
         self.assertIn("Sector-wise PLF", html)
-        self.assertIn("app.js?v=20260825-river-levels-04", html)
+        self.assertIn("app.js?v=20260901-imd-retry-1", html)
+        self.assertIn('id="gtt-back-main"', html)
+        self.assertIn('class="gtt-app-sidebar"', html)
+        self.assertIn("AI Insights", html)
+        self.assertIn("GTT Trade Intelligence", html)
+        self.assertIn('data-gtt-tab="overview"', html)
+        self.assertIn('id="gtt-compare-datasets"', html)
+        self.assertIn('<option value="australia">Australia · BOM coastal waters</option>', html)
+        self.assertIn('<option value="united_states">United States · NOAA/NWS marine</option>', html)
+        self.assertIn('<option value="canada">Canada · Environment Canada marine</option>', html)
+        self.assertIn('<option value="japan">Japan · JMA coastal forecasts</option>', html)
         self.assertIn("Cargo + tankers + type pending", html)
         self.assertIn('id="ais-watchlist" class="ais-watchlist" hidden', html)
         self.assertIn("positions in the background", html)
@@ -657,6 +685,53 @@ class PortApiTests(unittest.TestCase):
         self.assertNotIn('id="show-piracy-zones"', html)
         self.assertNotIn(">ECA<", html)
         self.assertNotIn("Security watch", html)
+
+    def test_country_port_weather_report_matches_reference_columns(self):
+        payload = {
+            "fetched_at": "2026-08-25T08:00:00+00:00",
+            "rows": [{
+                "provider": "Official test agency",
+                "provider_code": "cma",
+                "country": "China",
+                "location_type": "port",
+                "location_id": "test-karachi-coal-terminal",
+                "location_name": "Karachi Port Coal Terminal",
+                "latitude": 24.8,
+                "longitude": 66.9,
+                "issued_at": "2026-08-25T08:00:00+00:00",
+                "valid_from": "2026-08-25T08:00:00+00:00",
+                "valid_to": "2026-08-26T08:00:00+00:00",
+                "weather_condition": "Heavy rain",
+                "weather_description": "Heavy rain and rough seas.",
+                "warning_description": "Strong-wind warning",
+                "wind_speed_min_kn": 20,
+                "wind_speed_max_kn": 30,
+                "temperature_min_c": 26,
+                "temperature_max_c": 30,
+                "forecast_basis": "Official coastal forecast mapped to port",
+                "source_url": "https://example.gov/weather",
+            }],
+        }
+        with patch.object(sea_marine_weather_manager, "payload", payload):
+            response = self.client.get(
+                "/api/coastal-weather/port-report.xlsx", params={"source": "china"}
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("spreadsheetml.sheet", response.headers["content-type"])
+        workbook = load_workbook(io.BytesIO(response.content), data_only=False)
+        sheet = workbook["China"]
+        self.assertEqual(
+            [sheet.cell(3, column).value for column in range(1, 9)],
+            [
+                "PORT NAME", "WEATHER", "CURRENTLY PORT CLOSE",
+                "AVERAGE TEMP (℃)", "WIND FORCE", "SPECIAL ISSUE IN PORT",
+                "WEATHER FORECAST (1 DAY)", "WEATHER FORECAST (3 DAYS)",
+            ],
+        )
+        self.assertEqual(sheet["A4"].value, "Karachi Port")
+        self.assertEqual(sheet["C4"].value, "Not reported")
+        self.assertEqual(sheet["D4"].value, 28)
+        self.assertIn("Strong-wind warning", sheet["F4"].value)
 
     def test_ais_status_and_trail_validation(self):
         status_response = self.client.get("/api/ais/status")

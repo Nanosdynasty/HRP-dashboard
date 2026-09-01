@@ -1,3 +1,32 @@
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async function protectedApiFetch(input, init = {}) {
+  const method = String(init.method || "GET").toUpperCase();
+  const url = typeof input === "string" ? input : input.url;
+  const sameOrigin = new URL(url, window.location.href).origin === window.location.origin;
+  const options = { ...init };
+  if (sameOrigin && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+    const token = window.sessionStorage.getItem("hrpAdminToken");
+    if (token) {
+      options.headers = new Headers(options.headers || {});
+      options.headers.set("X-Admin-Token", token);
+    }
+  }
+  let response = await nativeFetch(input, options);
+  if (sameOrigin && response.status === 401 && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+    const detail = await response.clone().json().catch(() => ({}));
+    if (String(detail.detail || "").includes("Administrator token")) {
+      const token = window.prompt("Administrator token required for this operation:");
+      if (token) {
+        window.sessionStorage.setItem("hrpAdminToken", token);
+        options.headers = new Headers(options.headers || {});
+        options.headers.set("X-Admin-Token", token);
+        response = await nativeFetch(input, options);
+      }
+    }
+  }
+  return response;
+};
+
 const LAYER_CONFIG = {
   coal_plants: { label: "Coal plant", color: "#6f7782", radius: 3, mode: "energy" },
   solar: { label: "Solar power", color: "#e9a823", radius: 2, mode: "energy" },
@@ -150,6 +179,8 @@ const state = {
   coastalWeatherParameters: new Set(["rain", "wind", "wave", "warning", "cyclone"]),
   coastalWeatherView: "map",
   coastalWeatherLocationType: "all",
+  coastalWeatherDataClass: "all",
+  coastalWeatherPortStatus: "all",
   coastalWeatherQuery: "",
   coastalWeatherLoading: false,
   coastalWeatherPendingReload: false,
@@ -170,6 +201,14 @@ const state = {
   dataHubSummary: null,
   dataHubPreview: null,
   dataHubProvider: null,
+  gttTab: "overview",
+  gttAnalytics: null,
+  gttAnalyticsDatasetId: null,
+  gttAnalyticsKey: "",
+  gttDimensions: null,
+  gttLeafletMap: null,
+  gttTradeLayer: null,
+  gttChartModes: { trend: "line", partners: "bars", reporters: "bars", commodities: "bars" },
   nppLoaded: false,
   nppRefreshTimer: null,
   continentLabels: null,
@@ -226,6 +265,30 @@ async function init() {
 }
 
 function bindControls() {
+  const syncCollapsedSection = section => {
+    Array.from(section.children).forEach(child => {
+      if (child.tagName === "SUMMARY") return;
+      child.inert = !section.open;
+      child.toggleAttribute("aria-hidden", !section.open);
+      child.querySelectorAll("a, button, input, select, textarea, [tabindex]").forEach(control => {
+        if (!section.open) {
+          if (!control.hasAttribute("data-open-tabindex")) {
+            control.setAttribute("data-open-tabindex", control.getAttribute("tabindex") || "");
+          }
+          control.setAttribute("tabindex", "-1");
+        } else {
+          const previous = control.getAttribute("data-open-tabindex");
+          if (previous === "") control.removeAttribute("tabindex");
+          else if (previous !== null) control.setAttribute("tabindex", previous);
+          control.removeAttribute("data-open-tabindex");
+        }
+      });
+    });
+  };
+  document.querySelectorAll("details.filter-section").forEach(section => {
+    syncCollapsedSection(section);
+    section.addEventListener("toggle", () => syncCollapsedSection(section));
+  });
   document.querySelectorAll(".filter-section[data-mode]").forEach(section => {
     section.addEventListener("toggle", () => {
       if (section.open) activateMode(section.dataset.mode);
@@ -338,6 +401,16 @@ function bindControls() {
     renderCoastalWeather();
     renderWeatherWorkspace();
   });
+  document.getElementById("coastal-weather-data-class").addEventListener("change", event => {
+    state.coastalWeatherDataClass = event.target.value;
+    renderCoastalWeather();
+    renderWeatherWorkspace();
+  });
+  document.getElementById("coastal-weather-port-status").addEventListener("change", event => {
+    state.coastalWeatherPortStatus = event.target.value;
+    renderCoastalWeather();
+    renderWeatherWorkspace();
+  });
   document.getElementById("weather-workspace-search").addEventListener("input", event => {
     state.coastalWeatherQuery = event.target.value.trim().toLowerCase();
     renderWeatherWorkspace();
@@ -430,7 +503,27 @@ function bindControls() {
     runCoalResearch();
   });
   document.getElementById("npp-refresh").addEventListener("click", () => loadNppPower(true));
-  document.getElementById("datahub-open-workspace").addEventListener("click", () => activateMode("datahub"));
+  document.getElementById("gtt-open-workspace").addEventListener("click", () => activateMode("gtt"));
+  document.getElementById("gtt-back-main").addEventListener("click", () => activateMode("ports"));
+  document.querySelectorAll("[data-gtt-tab]").forEach(button => {
+    button.addEventListener("click", () => setGttTab(button.dataset.gttTab));
+  });
+  document.querySelectorAll("[data-gtt-chart-mode]").forEach(select => select.addEventListener("change", () => {
+    state.gttChartModes[select.dataset.gttChartMode] = select.value;
+    renderGttOverview(filteredGttDatasets());
+  }));
+  ["gtt-flow-filter", "gtt-year-from", "gtt-year-to", "gtt-frequency-filter", "gtt-metric-filter", "gtt-unit-filter"].forEach(id => {
+    document.getElementById(id).addEventListener("change", renderGttWorkspace);
+  });
+  ["gtt-exporter-filter", "gtt-importer-filter", "gtt-hs-filter"].forEach(id => {
+    document.getElementById(id).addEventListener("change", () => { state.gttAnalyticsKey = ""; renderGttWorkspace(); });
+  });
+  ["gtt-map-side", "gtt-map-view"].forEach(id => document.getElementById(id).addEventListener("change", () => renderGttTradeMap(state.gttAnalytics)));
+  document.getElementById("gtt-reset-filters").addEventListener("click", resetGttFilters);
+  document.getElementById("gtt-run-compare").addEventListener("click", compareGttDatasets);
+  ["gtt-upload-file", "gtt-upload-file-secondary"].forEach(id => document.getElementById(id).addEventListener("click", () => openDataHubUpload("gtt")));
+  document.getElementById("gtt-connect-api").addEventListener("click", () => openDataHubApi("gtt"));
+  document.getElementById("datahub-open-workspace").addEventListener("click", () => { activateMode("datahub"); setDataHubTab("visualize"); });
   document.getElementById("datahub-provider-filter").addEventListener("change", renderDataHubCatalog);
   document.querySelectorAll("[data-datahub-tab]").forEach(button => {
     button.addEventListener("click", () => setDataHubTab(button.dataset.datahubTab));
@@ -499,6 +592,7 @@ function activateMode(mode) {
   });
   const coalOnly = mode === "coal";
   const dataHubOnly = mode === "datahub";
+  const gttOnly = mode === "gtt";
   const riverOnly = mode === "rivers";
   if (!riverOnly && state.riverLayer && state.map.hasLayer(state.riverLayer)) {
     state.map.removeLayer(state.riverLayer);
@@ -507,7 +601,7 @@ function activateMode(mode) {
   [state.aisLayer, state.aisTrailLayer, state.routeLayer].forEach(layer => {
     if (layer && state.map.hasLayer(layer)) state.map.removeLayer(layer);
   });
-  if (!coalOnly && !dataHubOnly && state.aisEnabled) {
+  if (!coalOnly && !dataHubOnly && !gttOnly && state.aisEnabled) {
     state.aisLayer.addTo(state.map);
     state.aisTrailLayer.addTo(state.map);
     renderAisVessels();
@@ -524,12 +618,13 @@ function activateMode(mode) {
   document.getElementById("weather-data-surface").hidden = true;
   document.getElementById("river-data-surface").hidden = true;
   document.getElementById("datahub-surface").hidden = !dataHubOnly;
+  document.getElementById("gtt-surface").hidden = !gttOnly;
   if (mode === "coal") {
     document.getElementById("datahub-surface").hidden = true;
     setCoalView(state.coalView);
     renderCoalLayers();
     state.map.fitBounds([[6, 68], [37, 98]], { padding: [25, 25] });
-  } else if (dataHubOnly) {
+  } else if (dataHubOnly || gttOnly) {
     state.coalLayer.clearLayers();
     document.getElementById("coal-data-surface").hidden = true;
     document.getElementById("npp-power-surface").hidden = true;
@@ -537,9 +632,11 @@ function activateMode(mode) {
     document.querySelector(".map-topbar").hidden = true;
     document.querySelector(".map-key").hidden = true;
     loadDataHubSummary();
+    if (gttOnly) setGttTab(state.gttTab);
   } else {
     state.coalLayer.clearLayers();
     document.getElementById("datahub-surface").hidden = true;
+    document.getElementById("gtt-surface").hidden = true;
     document.getElementById("coal-data-surface").hidden = true;
     document.getElementById("npp-power-surface").hidden = true;
     document.getElementById("map").hidden = false;
@@ -613,12 +710,462 @@ function renderDataHubSummary() {
   document.querySelectorAll("[data-provider-api]").forEach(button => button.addEventListener("click", () => openDataHubApi(button.dataset.providerApi)));
   populateDataHubDatasetSelectors();
   renderDataHubCatalog();
+  renderGttWorkspace();
+}
+
+function setGttTab(tab) {
+  state.gttTab = tab;
+  document.querySelectorAll("[data-gtt-tab]").forEach(button => button.classList.toggle("active", button.dataset.gttTab === tab));
+  document.querySelectorAll("[data-gtt-panel]").forEach(panel => { panel.hidden = panel.dataset.gttPanel !== tab; });
+  renderGttWorkspace();
+}
+
+function resetGttFilters() {
+  ["gtt-flow-filter", "gtt-exporter-filter", "gtt-importer-filter", "gtt-hs-filter", "gtt-year-from", "gtt-year-to", "gtt-frequency-filter"].forEach(id => { document.getElementById(id).value = ""; });
+  document.getElementById("gtt-metric-filter").value = "quantity";
+  document.getElementById("gtt-unit-filter").value = "mt";
+  state.gttAnalyticsKey = "";
+  renderGttWorkspace();
+}
+
+function gttDatasetYear(value) {
+  if (!value) return null;
+  const match = String(value).match(/(?:19|20)\d{2}/);
+  return match ? Number(match[0]) : null;
+}
+
+function filteredGttDatasets() {
+  const all = (state.dataHubSummary?.datasets || []).filter(item => item.provider === "gtt");
+  const frequency = document.getElementById("gtt-frequency-filter")?.value || "";
+  const fromYear = Number(document.getElementById("gtt-year-from")?.value || 0);
+  const toYear = Number(document.getElementById("gtt-year-to")?.value || 9999);
+  return all.filter(item => {
+    const start = gttDatasetYear(item.data_start) || -Infinity;
+    const end = gttDatasetYear(item.data_end) || Infinity;
+    return (!frequency || item.frequency === frequency) && end >= fromYear && start <= toYear;
+  });
+}
+
+function populateGttYearFilters(datasets) {
+  const years = new Set();
+  datasets.forEach(item => {
+    const start = gttDatasetYear(item.data_start); const end = gttDatasetYear(item.data_end);
+    if (start && end && end >= start && end - start <= 100) {
+      for (let year = start; year <= end; year += 1) years.add(year);
+    } else {
+      if (start) years.add(start); if (end) years.add(end);
+    }
+  });
+  const ordered = Array.from(years).sort((a, b) => a - b);
+  [["gtt-year-from", "Earliest available"], ["gtt-year-to", "Latest available"]].forEach(([id, label]) => {
+    const select = document.getElementById(id); const current = select.value;
+    select.innerHTML = `<option value="">${label}</option>${ordered.map(year => `<option value="${year}">${year}</option>`).join("")}`;
+    if (ordered.includes(Number(current))) select.value = current;
+  });
+}
+
+function gttCoverageLabel(datasets) {
+  const starts = datasets.map(item => item.data_start).filter(Boolean).sort();
+  const ends = datasets.map(item => item.data_end).filter(Boolean).sort();
+  if (!starts.length || !ends.length) return "Coverage not detected";
+  return `${formatDataHubDate(starts[0])} – ${formatDataHubDate(ends.at(-1))}`;
+}
+
+function renderGttWorkspace() {
+  if (!state.dataHubSummary) return;
+  const allGtt = (state.dataHubSummary.datasets || []).filter(item => item.provider === "gtt");
+  populateGttYearFilters(allGtt);
+  const datasets = filteredGttDatasets();
+  const rows = datasets.reduce((sum, item) => sum + Number(item.row_count || 0), 0);
+  const latest = datasets.map(item => item.data_end).filter(Boolean).sort().at(-1);
+  const reviewCount = datasets.filter(item => item.quality_status !== "profiled").length;
+  const overdue = datasets.filter(item => item.freshness?.status === "overdue").length;
+  const coverage = gttCoverageLabel(datasets);
+  const status = !allGtt.length ? "Awaiting data" : overdue ? `${overdue} update${overdue === 1 ? "" : "s"} due` : "Source ready";
+  const textValues = {
+    "gtt-sidebar-status": status,
+    "gtt-sidebar-datasets": allGtt.length,
+    "gtt-sidebar-rows": allGtt.reduce((sum, item) => sum + Number(item.row_count || 0), 0).toLocaleString(),
+    "gtt-header-status": !allGtt.length ? "Awaiting validated GTT data" : reviewCount ? `${reviewCount} dataset${reviewCount === 1 ? "" : "s"} require review` : "Profiled GTT sources available",
+    "gtt-header-coverage": allGtt.length ? gttCoverageLabel(allGtt) : "No reporting coverage",
+    "gtt-kpi-datasets": datasets.length || "—",
+    "gtt-kpi-rows": rows ? rows.toLocaleString() : "—",
+    "gtt-kpi-coverage": datasets.length ? `${gttDatasetYear(datasets.map(item => item.data_start).filter(Boolean).sort()[0]) || "—"}–${gttDatasetYear(latest) || "—"}` : "—",
+    "gtt-kpi-latest": latest ? formatDataHubDate(latest) : "—",
+    "gtt-kpi-quality": !datasets.length ? "—" : reviewCount ? "Review needed" : "Profiled"
+  };
+  Object.entries(textValues).forEach(([id, value]) => { const element = document.getElementById(id); if (element) element.textContent = value; });
+  const analyticsDataset = [...datasets].sort((a, b) => String(b.data_end || b.uploaded_at || "").localeCompare(String(a.data_end || a.uploaded_at || "")))[0];
+  const analyticsKey = analyticsDataset ? `${analyticsDataset.id}|${document.getElementById("gtt-exporter-filter")?.value || ""}|${document.getElementById("gtt-importer-filter")?.value || ""}|${document.getElementById("gtt-hs-filter")?.value || ""}|${document.getElementById("gtt-year-from")?.value || ""}|${document.getElementById("gtt-year-to")?.value || ""}` : "";
+  if (analyticsDataset && state.gttAnalyticsKey !== analyticsKey) loadGttAnalytics(analyticsDataset.id, analyticsKey);
+  renderGttOverview(datasets);
+  renderGttCatalog("gtt-explore-catalog", datasets);
+  renderGttCatalog("gtt-upload-catalog", allGtt);
+  populateGttCompare(datasets);
+  renderGttGatedViews(allGtt);
+  renderGttAdmin(allGtt);
+}
+
+function populateGttDimensionFilters(payload) {
+  if (!state.gttDimensions || (!payload?.filters?.reporter && !payload?.filters?.partner && !payload?.filters?.hs_code)) {
+    state.gttDimensions = payload?.dimensions || {};
+  }
+  const dimensions = state.gttDimensions || {};
+  [["gtt-exporter-filter", "All exporters", dimensions.reporters], ["gtt-importer-filter", "All importers", dimensions.partners], ["gtt-hs-filter", "All HS codes", dimensions.hs_codes]].forEach(([id, placeholder, values]) => {
+    const select = document.getElementById(id); if (!select) return;
+    const current = select.value;
+    select.innerHTML = `<option value="">${placeholder}</option>${(values || []).map(value => `<option value="${escapeAttr(value)}">${escapeHtml(value)}</option>`).join("")}`;
+    if ((values || []).includes(current)) select.value = current;
+  });
+}
+
+async function loadGttAnalytics(datasetId, analyticsKey = datasetId) {
+  state.gttAnalyticsDatasetId = datasetId;
+  state.gttAnalyticsKey = analyticsKey;
+  state.gttAnalytics = null;
+  renderGttOverview(filteredGttDatasets());
+  try {
+    const params = new URLSearchParams();
+    const exporter = document.getElementById("gtt-exporter-filter")?.value; const importer = document.getElementById("gtt-importer-filter")?.value; const hs = document.getElementById("gtt-hs-filter")?.value;
+    const from = document.getElementById("gtt-year-from")?.value; const to = document.getElementById("gtt-year-to")?.value;
+    if (exporter) params.set("reporter", exporter); if (importer) params.set("partner", importer); if (hs) params.set("hs_code", hs); if (from) params.set("year_from", from); if (to) params.set("year_to", to);
+    const response = await fetch(`/api/data-hub/datasets/${encodeURIComponent(datasetId)}/analytics${params.toString() ? `?${params}` : ""}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || "Trade analytics are unavailable");
+    if (state.gttAnalyticsKey !== analyticsKey) return;
+    state.gttAnalytics = payload;
+    populateGttDimensionFilters(payload);
+    renderGttOverview(filteredGttDatasets());
+  } catch (error) {
+    if (state.gttAnalyticsKey !== analyticsKey) return;
+    state.gttAnalytics = { error: error.message };
+    renderGttOverview(filteredGttDatasets());
+  }
+}
+
+function compactTradeNumber(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+  return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(Number(value));
+}
+
+function gttRankRows(rows) {
+  if (!rows?.length) return `<div class="gtt-empty"><strong>No ranked dimension</strong><span>This field was not available in the source.</span></div>`;
+  const max = Math.max(...rows.map(row => Number(row.value || 0)), 1);
+  return rows.slice(0, 7).map((row, index) => `<div class="gtt-rank-row"><b>${index + 1}</b><span title="${escapeAttr(row.label)}">${escapeHtml(row.label)}</span><i style="--bar:${Math.max(2, Number(row.value || 0) / max * 100)}%"></i><strong title="${Number(row.value || 0).toLocaleString()} MT">${compactTradeNumber(row.value)} MT</strong></div>`).join("");
+}
+
+function gttRankTable(rows) {
+  if (!rows?.length) return `<div class="gtt-empty"><strong>No ranked dimension</strong><span>This field was not available in the source.</span></div>`;
+  return `<table class="gtt-mini-table"><thead><tr><th>Rank</th><th>Entity</th><th>Value</th></tr></thead><tbody>${rows.slice(0, 8).map((row, index) => `<tr><td>${index + 1}</td><td>${escapeHtml(row.label)}</td><td>${compactTradeNumber(row.value)} MT</td></tr>`).join("")}</tbody></table>`;
+}
+
+function gttTrendSvg(rows, metricKey = "quantity_mt", unitLabel = "MT", mode = "line") {
+  const width = 860, height = 285, left = 64, right = 18, top = 18, bottom = 40;
+  if (!rows.length) return `<div class="gtt-empty"><strong>No trend for selected period</strong><span>Adjust the year filters to include source coverage.</span></div>`;
+  const values = rows.map(row => Number(row[metricKey] || 0));
+  const maxValue = Math.max(...values, 1);
+  const innerWidth = width - left - right, innerHeight = height - top - bottom;
+  const points = rows.map((row, index) => {
+    const x = left + (rows.length === 1 ? innerWidth / 2 : index / (rows.length - 1) * innerWidth);
+    const y = top + innerHeight - Number(row[metricKey] || 0) / maxValue * innerHeight;
+    return { x, y, row };
+  });
+  const line = mode === "step"
+    ? points.map((point, index) => index ? `H${point.x.toFixed(1)} V${point.y.toFixed(1)}` : `M${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ")
+    : points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+  const area = `${line} L${points.at(-1).x.toFixed(1)},${(top + innerHeight).toFixed(1)} L${points[0].x.toFixed(1)},${(top + innerHeight).toFixed(1)} Z`;
+  const grid = Array.from({ length: 5 }, (_, index) => {
+    const fraction = index / 4, y = top + innerHeight - fraction * innerHeight;
+    return `<line class="grid" x1="${left}" y1="${y}" x2="${width-right}" y2="${y}"/><text class="axis" x="${left-8}" y="${y+3}" text-anchor="end">${compactTradeNumber(maxValue * fraction)}</text>`;
+  }).join("");
+  const tickIndexes = Array.from(new Set(Array.from({ length: Math.min(7, rows.length) }, (_, index) => Math.round(index * (rows.length - 1) / Math.max(1, Math.min(7, rows.length) - 1)))));
+  const ticks = tickIndexes.map(index => `<text class="axis" x="${points[index].x}" y="${height-14}" text-anchor="middle">${escapeHtml(formatMonthYear(rows[index].period))}</text>`).join("");
+  const dots = points.map(point => `<circle class="point" cx="${point.x}" cy="${point.y}" r="3"><title>${escapeHtml(formatMonthYear(point.row.period))}: ${Number(point.row[metricKey] || 0).toLocaleString()} ${unitLabel}</title></circle>`).join("");
+  const areaMarkup = mode === "area" ? `<path class="area" d="${area}"/>` : "";
+  const dotsMarkup = mode === "scatter" ? dots : (mode === "line" || mode === "step" ? dots : "");
+  return `<svg class="gtt-line-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Reported ${escapeAttr(unitLabel)} trend"><defs><linearGradient id="gttArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3f83d7"/><stop offset="1" stop-color="#dfeafa"/></linearGradient></defs>${grid}${areaMarkup}<path class="line" d="${line}"/>${dotsMarkup}${ticks}</svg>`;
+}
+
+function gttRankVisual(rows, mode) {
+  if (!rows?.length) return gttRankRows(rows);
+  if (mode === "table") return gttRankTable(rows);
+  if (mode === "bars") return gttRankRows(rows);
+  const series = rows.slice(0, 8).map(row => ({ period: row.label, quantity_mt: Number(row.value || 0) }));
+  if (["line", "area", "scatter", "step"].includes(mode)) return gttTrendSvg(series, "quantity_mt", "MT", mode);
+  if (mode === "bar") return gttBarSvg(series, "quantity_mt", "MT");
+  return `<div class="gtt-empty"><strong>${escapeHtml(labelize(mode))} is not ideal for a categorical ranking</strong><span>Showing the ranked entities as bars or a table keeps country and commodity comparisons readable.</span></div>`;
+}
+
+const GTT_COUNTRY_COORDS = {
+  IN: [22.6, 79.4], CN: [35.8, 103.8], JP: [36.2, 138.3], KR: [36.4, 127.9], US: [39.8, -98.6], CA: [56.1, -106.3], BR: [-10.8, -52.9], AU: [-25.3, 133.8], ID: [-2.2, 117.3], SG: [1.35, 103.8], VN: [14.1, 108.3], TH: [15.6, 101], MY: [4.2, 102], RU: [61.5, 105.3], DE: [51.2, 10.5], GB: [54.2, -2.7], NL: [52.2, 5.3], FR: [46.3, 2.2], ES: [40.2, -3.7], IT: [41.9, 12.6], ZA: [-30.6, 22.9], AE: [23.4, 53.8], SA: [23.9, 45.1], QA: [25.3, 51.2], TR: [39, 35.2], CL: [-35.7, -71.5], AR: [-38.4, -63.6], MX: [23.6, -102.6], EG: [26.8, 30.8], NG: [9.1, 8.7], PL: [51.9, 19.1], BE: [50.5, 4.5], SE: [60.1, 18.6], NO: [61.2, 8.5], DK: [56.2, 9.5], FI: [64.9, 26]
+};
+
+function gttCountryPoint(iso, index = 0) {
+  const known = GTT_COUNTRY_COORDS[String(iso || "").toUpperCase()];
+  if (known) return known;
+  // Keep a record with an unknown ISO code visible rather than dropping it.
+  return [Math.max(-50, Math.min(65, -30 + (index * 17) % 95)), -150 + (index * 47) % 285];
+}
+
+function ensureGttLeafletMap() {
+  const container = document.getElementById("gtt-trade-map");
+  if (!container || state.gttLeafletMap || typeof L === "undefined") return state.gttLeafletMap;
+  container.innerHTML = "";
+  const map = L.map(container, {
+    zoomControl: false,
+    attributionControl: true,
+    worldCopyJump: true,
+    minZoom: 1,
+    maxZoom: 7,
+    preferCanvas: true
+  }).setView([20, 10], 2);
+  // Use the same clean, neutral Esri canvas layer as the main product map.  It
+  // keeps trade routes readable and avoids the variable cartography of public
+  // street tiles.
+  L.tileLayer(
+    "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+    { maxZoom: 7, attribution: "Tiles © Esri" }
+  ).addTo(map);
+  L.tileLayer(
+    "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
+    { maxZoom: 7, pane: "overlayPane", attribution: "Labels © Esri" }
+  ).addTo(map);
+  L.control.zoom({ position: "topright" }).addTo(map);
+  L.control.scale({ position: "bottomleft", imperial: false, maxWidth: 90 }).addTo(map);
+  state.gttLeafletMap = map;
+  state.gttTradeLayer = L.layerGroup().addTo(map);
+  return map;
+}
+
+function renderGttTradeMap(analytics) {
+  const container = document.getElementById("gtt-trade-map");
+  const card = document.getElementById("gtt-trade-map-card");
+  if (!container || document.getElementById("gtt-surface")?.hidden) return;
+  const map = ensureGttLeafletMap();
+  if (!map) return;
+  map.invalidateSize();
+  state.gttTradeLayer.clearLayers();
+  const flows = analytics?.map_flows || [];
+  if (!flows.length) {
+    map.setView([20, 10], 2);
+    if (card) card.hidden = true;
+    return;
+  }
+  const side = document.getElementById("gtt-map-side")?.value || "exporter";
+  const view = document.getElementById("gtt-map-view")?.value || "flows";
+  const totals = new Map();
+  flows.forEach((flow, index) => {
+    const label = side === "exporter" ? flow.exporter : flow.importer;
+    const iso = side === "exporter" ? flow.exporter_iso2 : flow.importer_iso2;
+    const item = totals.get(label) || { label, iso, value: 0, flows: [], index };
+    item.value += Number(flow.quantity_mt || 0); item.flows.push(flow); totals.set(label, item);
+  });
+  const countries = Array.from(totals.values()).sort((a, b) => b.value - a.value).slice(0, 36);
+  const max = Math.max(...countries.map(item => item.value), 1);
+  const colors = ["#0b5b9c", "#ef3d48", "#4f8fba", "#d8902f", "#6e5aa6", "#26805a", "#116a75", "#9d5579"];
+  const points = new Map(countries.map(item => [item.label, gttCountryPoint(item.iso, item.index)]));
+  if (view === "flows") {
+    flows.slice(0, 100).forEach((flow, index) => {
+      const start = gttCountryPoint(flow.exporter_iso2, index);
+      const end = gttCountryPoint(flow.importer_iso2, index + 1);
+      L.polyline([start, end], { color: "#80add0", weight: 1.2, opacity: .52, interactive: false }).addTo(state.gttTradeLayer);
+    });
+  }
+  countries.forEach((item, index) => {
+    const radius = 6 + Math.sqrt(item.value / max) * 16;
+    const color = colors[index % colors.length];
+    const marker = L.circleMarker(points.get(item.label), { radius, color: "#fff", weight: 2, fillColor: color, fillOpacity: 1 }).addTo(state.gttTradeLayer);
+    const show = () => {
+      if (!card) return;
+      card.hidden = false;
+      card.innerHTML = `<strong>${escapeHtml(item.label)}</strong><span>${side === "exporter" ? "Exporter" : "Importer"} total · ${compactTradeNumber(item.value)} MT</span><small>${item.flows.slice(0, 5).map(flow => `${escapeHtml(flow.exporter)} → ${escapeHtml(flow.importer)} · ${compactTradeNumber(flow.quantity_mt)} MT`).join("<br>")}</small>`;
+    };
+    marker.bindTooltip(`<strong>${escapeHtml(item.label)}</strong><br>${compactTradeNumber(item.value)} MT`, { sticky: true, className: "weather-leaflet-tooltip" });
+    marker.on({ mouseover: show, click: show, focus: show });
+  });
+  const bounds = countries.map(item => points.get(item.label));
+  if (bounds.length > 1) map.fitBounds(bounds, { padding: [24, 24], maxZoom: 3 });
+  else map.setView(bounds[0], 3);
+}
+
+function renderGttCountryProfile(analytics) {
+  const title = document.getElementById("gtt-country-name");
+  const subtitle = document.getElementById("gtt-country-subtitle");
+  const container = document.getElementById("gtt-country-profile-content");
+  if (!title || !subtitle || !container) return;
+  if (!analytics || analytics.error) {
+    title.textContent = "Selected country";
+    subtitle.textContent = "Choose an exporter or importer to analyse trade.";
+    container.innerHTML = `<div class="gtt-profile-note">Country profile will populate from the validated bilateral trade rows.</div>`;
+    return;
+  }
+  const filters = analytics.filters || {};
+  const isExporter = Boolean(filters.reporter);
+  const selected = filters.reporter || filters.partner || analytics.top_reporters?.[0]?.label || analytics.top_partners?.[0]?.label || "All countries";
+  const total = Number(analytics.metrics?.quantity_mt || 0);
+  const counterparty = isExporter ? analytics.top_partners?.[0] : analytics.top_reporters?.[0];
+  title.textContent = selected;
+  subtitle.textContent = `${isExporter ? "Exporter" : filters.partner ? "Importer" : "Top reporting market"} · selected trade analysis`;
+  container.innerHTML = `<article><span>Total quantity</span><strong>${compactTradeNumber(total)} MT</strong><small>Selected time period and HS-code scope</small></article><article><span>${isExporter ? "Top destination" : "Top origin"}</span><strong>${escapeHtml(counterparty?.label || "—")}</strong><small>${compactTradeNumber(counterparty?.value)} MT</small></article><article><span>Trade partners</span><strong>${analytics.metrics?.partner_count ?? "—"}</strong><small>Distinct countries represented</small></article><article><span>Commodity / HS</span><strong>${escapeHtml(filters.hs_code || analytics.dimensions?.hs_codes?.[0] || "All")}</strong><small>${analytics.metrics?.commodity_count ?? "—"} commodity descriptions</small></article><div class="gtt-profile-note">Use the exporter and importer filters above to change the country profile, map and all charts together.</div>`;
+}
+
+function gttBarSvg(rows, metricKey, unitLabel) {
+  const width = 860, height = 285, left = 64, right = 18, top = 18, bottom = 40;
+  if (!rows.length) return `<div class="gtt-empty"><strong>No trend for selected period</strong><span>Adjust the year filters to include source coverage.</span></div>`;
+  const maxValue = Math.max(...rows.map(row => Number(row[metricKey] || 0)), 1);
+  const innerWidth = width - left - right, innerHeight = height - top - bottom;
+  const barWidth = Math.max(3, Math.min(28, innerWidth / rows.length * .72));
+  const y = value => top + innerHeight - Number(value || 0) / maxValue * innerHeight;
+  const grid = Array.from({ length: 5 }, (_, index) => { const fraction = index / 4, gy = top + innerHeight - fraction * innerHeight; return `<line class="grid" x1="${left}" y1="${gy}" x2="${width-right}" y2="${gy}"/><text class="axis" x="${left-8}" y="${gy+3}" text-anchor="end">${compactTradeNumber(maxValue * fraction)}</text>`; }).join("");
+  const bars = rows.map((row, index) => { const x = left + (index + .5) / rows.length * innerWidth, value = Number(row[metricKey] || 0); return `<rect class="point" x="${x - barWidth/2}" y="${y(value)}" width="${barWidth}" height="${top+innerHeight-y(value)}" fill="#0b5b9c"><title>${escapeHtml(formatMonthYear(row.period))}: ${value.toLocaleString()} ${unitLabel}</title></rect>`; }).join("");
+  const labelIndexes = Array.from(new Set(Array.from({length: Math.min(7, rows.length)}, (_, i) => Math.round(i * (rows.length - 1) / Math.max(1, Math.min(7, rows.length) - 1)))));
+  const labels = labelIndexes.map(index => `<text class="axis" x="${left + (index + .5) / rows.length * innerWidth}" y="${height-14}" text-anchor="middle">${escapeHtml(formatMonthYear(rows[index].period))}</text>`).join("");
+  return `<svg class="gtt-line-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Reported ${escapeAttr(unitLabel)} bars">${grid}${bars}${labels}</svg>`;
+}
+
+function gttPeriodSummary(rows, metricKey, unitLabel) {
+  if (!rows.length) return `<div class="gtt-empty"><strong>No periods in range</strong><span>Adjust the year filters to inspect the source.</span></div>`;
+  const latest = rows.at(-1), previous = rows.at(-2);
+  const current = Number(latest?.[metricKey] || 0), prior = Number(previous?.[metricKey] || 0);
+  const delta = prior ? (current - prior) / prior : null;
+  const deltaLabel = delta === null ? "No prior comparable period" : `${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)}% vs ${formatMonthYear(previous.period)}`;
+  return `<div class="gtt-period-stat"><span>Latest observed</span><strong>${compactTradeNumber(current)} ${unitLabel}</strong><small>${escapeHtml(formatMonthYear(latest.period))}</small></div><div class="gtt-period-stat"><span>Prior period</span><strong>${compactTradeNumber(prior)} ${unitLabel}</strong><small>${previous ? escapeHtml(formatMonthYear(previous.period)) : "—"}</small></div><div class="gtt-period-delta ${delta !== null && delta < 0 ? "negative" : ""}"><span>Period movement</span><strong>${escapeHtml(deltaLabel)}</strong></div>`;
+}
+
+function renderGttOverview(datasets) {
+  const chart = document.getElementById("gtt-overview-chart");
+  const ranked = document.getElementById("gtt-top-datasets");
+  const freshness = document.getElementById("gtt-freshness-summary");
+  const commodities = document.getElementById("gtt-top-commodities");
+  const periodSummary = document.getElementById("gtt-period-summary");
+  renderGttCountryProfile(state.gttAnalytics);
+  renderGttTradeMap(state.gttAnalytics);
+  if (!datasets.length) {
+    const empty = `<div class="gtt-empty"><strong>No validated GTT records yet</strong><span>Upload a licensed GTT file or configure its connector to populate this view.</span><button type="button" data-gtt-empty-upload>Upload GTT data</button></div>`;
+    chart.innerHTML = empty; ranked.innerHTML = empty; freshness.innerHTML = empty; commodities.innerHTML = empty; periodSummary.innerHTML = empty;
+    document.querySelectorAll("[data-gtt-empty-upload]").forEach(button => button.addEventListener("click", () => openDataHubUpload("gtt")));
+    return;
+  }
+  if (!state.gttAnalytics) {
+    chart.innerHTML = `<div class="gtt-empty"><strong>Aggregating validated trade rows…</strong><span>Preparing monthly quantities and country rankings.</span></div>`;
+    ranked.innerHTML = freshness.innerHTML = commodities.innerHTML = periodSummary.innerHTML = `<div class="gtt-empty"><strong>Loading source dimensions…</strong></div>`;
+    return;
+  }
+  if (state.gttAnalytics.error) {
+    chart.innerHTML = ranked.innerHTML = freshness.innerHTML = commodities.innerHTML = periodSummary.innerHTML = `<div class="gtt-empty"><strong>Analytics unavailable</strong><span>${escapeHtml(state.gttAnalytics.error)}</span></div>`;
+    return;
+  }
+  const analytics = state.gttAnalytics;
+  const fromYear = Number(document.getElementById("gtt-year-from").value || 0);
+  const toYear = Number(document.getElementById("gtt-year-to").value || 9999);
+  const trend = (analytics.trend || []).filter(row => { const year = Number(String(row.period).slice(0,4)); return year >= fromYear && year <= toYear; });
+  const selectedMetric = document.getElementById("gtt-metric-filter")?.value || "quantity";
+  const metricKey = selectedMetric === "value" ? "trade_value" : "quantity_mt";
+  const unitLabel = selectedMetric === "value" ? "USD" : "MT";
+  const metricAvailable = selectedMetric !== "value" || Number(analytics.metrics.currency_count || 0) <= 1;
+  const filteredQuantity = trend.reduce((sum, row) => sum + Number(row[metricKey] || 0), 0);
+  const values = {
+    "gtt-kpi-datasets": metricAvailable ? `${compactTradeNumber(filteredQuantity)} ${unitLabel}` : "Unavailable",
+    "gtt-kpi-rows": Number(analytics.metrics.records || 0).toLocaleString(),
+    "gtt-kpi-coverage": analytics.metrics.reporter_count ?? "—",
+    "gtt-kpi-latest": analytics.metrics.partner_count ?? "—",
+    "gtt-kpi-quality": `${gttDatasetYear(analytics.dataset.data_start) || "—"}–${gttDatasetYear(analytics.dataset.data_end) || "—"}`,
+    "gtt-nav-footer-status": analytics.dataset.dataset_name || "Source-backed analytics"
+  };
+  Object.entries(values).forEach(([id, value]) => { const element = document.getElementById(id); if (element) element.textContent = value; });
+  document.getElementById("gtt-chart-source").textContent = !metricAvailable ? `${analytics.metrics.currency_count} source currencies · USD values kept separate` : analytics.dataset.dataset_name;
+  const trendMode = state.gttChartModes.trend;
+  chart.innerHTML = !metricAvailable ? `<div class="gtt-empty"><strong>Trade value is not comparable</strong><span>This source contains ${analytics.metrics.currency_count} currencies. Select Quantity or upload a single-currency source.</span></div>` : trendMode === "table" ? gttRankTable(trend.map(row => ({ label: formatMonthYear(row.period), value: row[metricKey] }))) : trendMode === "bar" ? gttBarSvg(trend, metricKey, unitLabel) : gttTrendSvg(trend, metricKey, unitLabel, trendMode);
+  ranked.innerHTML = gttRankVisual(analytics.top_partners, state.gttChartModes.partners);
+  freshness.innerHTML = gttRankVisual(analytics.top_reporters, state.gttChartModes.reporters);
+  commodities.innerHTML = gttRankVisual(analytics.top_commodities, state.gttChartModes.commodities);
+  periodSummary.innerHTML = metricAvailable ? gttPeriodSummary(trend, metricKey, unitLabel) : `<div class="gtt-empty"><strong>Movement unavailable</strong><span>Choose Quantity for a comparable period change.</span></div>`;
+}
+
+function renderGttCatalog(id, datasets) {
+  const container = document.getElementById(id); if (!container) return;
+  if (!datasets.length) {
+    container.innerHTML = `<div class="gtt-empty"><strong>No GTT datasets in this view</strong><span>Filters never substitute or fabricate unavailable coverage.</span></div>`;
+    return;
+  }
+  container.innerHTML = `<table><thead><tr><th>Dataset</th><th>Coverage</th><th>Frequency</th><th>Rows</th><th>Quality</th><th>Freshness</th><th></th></tr></thead><tbody>${datasets.map(item => `<tr><td><strong>${escapeHtml(item.dataset_name)}</strong><small>${escapeHtml(item.original_name || "GTT source")}</small></td><td>${escapeHtml(formatDataHubDate(item.data_start))}<br><b>${escapeHtml(formatDataHubDate(item.data_end))}</b></td><td>${escapeHtml(labelize(item.frequency || "ad_hoc"))}</td><td>${Number(item.row_count || 0).toLocaleString()}</td><td><span class="gtt-badge ${escapeAttr(item.quality_status)}">${escapeHtml(labelize(item.quality_status))}</span></td><td>${escapeHtml(item.freshness?.label || "Unknown")}</td><td><button type="button" data-gtt-open-dataset="${escapeAttr(item.id)}">Open</button></td></tr>`).join("")}</tbody></table>`;
+  bindGttDatasetLinks(container);
+}
+
+function bindGttDatasetLinks(container) {
+  container.querySelectorAll("[data-gtt-open-dataset]").forEach(button => button.addEventListener("click", () => {
+    activateMode("datahub"); setDataHubTab("visualize");
+    document.getElementById("datahub-viz-dataset").value = button.dataset.gttOpenDataset;
+    loadDataHubPreview();
+  }));
+}
+
+function populateGttCompare(datasets) {
+  const select = document.getElementById("gtt-compare-datasets");
+  const selected = new Set(Array.from(select.selectedOptions || []).map(option => option.value));
+  select.innerHTML = datasets.map(item => `<option value="${escapeAttr(item.id)}" ${selected.has(item.id) ? "selected" : ""}>${escapeHtml(item.dataset_name)}</option>`).join("");
+}
+
+async function compareGttDatasets() {
+  const selected = Array.from(document.getElementById("gtt-compare-datasets").selectedOptions).map(option => option.value).slice(0, 4);
+  const container = document.getElementById("gtt-compare-result");
+  if (selected.length < 2) { container.innerHTML = `<div class="gtt-empty"><strong>Select at least two series</strong><span>The Compare Lab supports two to four GTT datasets.</span></div>`; return; }
+  container.innerHTML = `<div class="gtt-empty"><strong>Checking aligned coverage…</strong></div>`;
+  try {
+    const response = await fetch(`/api/data-hub/compare?dataset_ids=${encodeURIComponent(selected.join(","))}`);
+    const payload = await response.json(); if (!response.ok) throw new Error(payload.detail || "Comparison failed");
+    container.innerHTML = `<div class="gtt-compare-cards">${payload.datasets.map(item => `<article><span>GTT SERIES</span><strong>${escapeHtml(item.dataset_name)}</strong><b>${Number(item.rows).toLocaleString()} rows</b><small>${escapeHtml(formatDataHubDate(item.data_start))} – ${escapeHtml(formatDataHubDate(item.data_end))}</small><small>${Number(item.null_rate || 0).toLocaleString(undefined, { style: "percent", maximumFractionDigits: 1 })} missing</small></article>`).join("")}</div><div class="gtt-shared-fields"><strong>${payload.join_ready ? "Candidate shared dimensions" : "No safe shared dimension detected"}</strong>${(payload.shared_fields || []).map(field => `<span>${escapeHtml(field)}</span>`).join("")}<p>${escapeHtml(payload.warning || "")}</p></div>`;
+  } catch (error) { container.innerHTML = `<div class="gtt-empty"><strong>Comparison failed</strong><span>${escapeHtml(error.message)}</span></div>`; }
+}
+
+function renderGttGatedViews(datasets) {
+  const groups = document.getElementById("gtt-groups-content");
+  const insights = document.getElementById("gtt-insights-content");
+  if (!datasets.length) {
+    groups.innerHTML = `<span>MASTER DIMENSIONS REQUIRED</span><h3>Groups are waiting for GTT data</h3><p>Load validated country and HS-code dimensions before creating private or shared definitions.</p><button type="button" data-gtt-go-upload>Open uploads</button>`;
+    insights.innerHTML = `<span>RELEASE 2</span><h3>Validated source required</h3><p>Load a profiled GTT dataset before generating a source-backed brief. Raw or unverified rows are never used as publishable evidence.</p><button type="button" disabled>Generate source-backed brief</button>`;
+  } else {
+    const groupNames = ["Asia importers", "Coal suppliers", "Top bilateral partners"];
+    groups.innerHTML = `<span>RELEASE 2 · GROUPS</span><h3>Reusable research groups</h3><p>Create a local, reviewable group definition from the dimensions in the validated source. Definitions stay separate from raw records.</p><div class="gtt-release-controls"><label>Group name<input id="gtt-group-name" value="${groupNames[0]}" /></label><label>Dimension<select id="gtt-group-dimension"><option value="reporter">Reporter countries</option><option value="partner">Partner countries</option><option value="commodity">Commodities</option></select></label></div><button type="button" data-gtt-create-group>Create group</button><div id="gtt-created-groups" class="gtt-created-groups" aria-live="polite"></div>`;
+    insights.innerHTML = `<span>RELEASE 2 · INSIGHTS</span><h3>Source-backed research brief</h3><p>Generate a transparent brief from validated aggregates, with coverage, units, currency caveats and the source dataset attached.</p><button type="button" data-gtt-generate-insight>Generate source-backed brief</button><div id="gtt-insight-result" class="gtt-insight-result" aria-live="polite"><span>No brief generated yet.</span></div>`;
+  }
+  groups.querySelectorAll("[data-gtt-go-upload]").forEach(button => button.addEventListener("click", () => setGttTab("uploads")));
+  groups.querySelectorAll("[data-gtt-create-group]").forEach(button => button.addEventListener("click", () => {
+    const name = document.getElementById("gtt-group-name")?.value.trim() || "Untitled group";
+    const dimension = document.getElementById("gtt-group-dimension")?.selectedOptions[0]?.textContent || "Dimension";
+    const created = document.getElementById("gtt-created-groups");
+    if (created) created.insertAdjacentHTML("beforeend", `<span>${escapeHtml(name)} · ${escapeHtml(dimension)} · local draft</span>`);
+  }));
+  insights.querySelectorAll("[data-gtt-generate-insight]").forEach(button => button.addEventListener("click", () => {
+    const result = document.getElementById("gtt-insight-result");
+    const analytics = state.gttAnalytics;
+    if (!result || !analytics || analytics.error) return;
+    const topPartner = analytics.top_partners?.[0];
+    const topReporter = analytics.top_reporters?.[0];
+    result.innerHTML = `<strong>Validated brief</strong><p>${Number(analytics.metrics.records || 0).toLocaleString()} records report ${compactTradeNumber(analytics.metrics.quantity_mt)} MT across ${analytics.trend?.length || 0} observed periods.</p><ul><li>Largest partner by quantity: ${escapeHtml(topPartner?.label || "Not available")} (${compactTradeNumber(topPartner?.value)} MT).</li><li>Largest reporter by quantity: ${escapeHtml(topReporter?.label || "Not available")} (${compactTradeNumber(topReporter?.value)} MT).</li><li>${escapeHtml(analytics.caveats?.[0] || "Source caveat not reported.")}</li></ul><small>Dataset: ${escapeHtml(analytics.dataset.dataset_name)} · Generated from validated aggregates only.</small>`;
+  }));
+}
+
+function renderGttAdmin(datasets) {
+  const provider = (state.dataHubSummary?.providers || []).find(item => item.id === "gtt") || {};
+  const connection = provider.connection;
+  document.getElementById("gtt-admin-grid").innerHTML = `<article><span>SOURCE CONNECTOR</span><h3>${connection ? "Credentials saved" : "Not connected"}</h3><p>${connection ? `${escapeHtml(connection.connection_label)} · ${escapeHtml(connection.key_mask)}` : "Configure licensed GTT access from Uploads."}</p></article><article><span>DATA QUALITY</span><h3>${datasets.filter(item => item.quality_status === "profiled").length} profiled / ${datasets.length} total</h3><p>Schema, date coverage, nulls and duplicate rows are reported for every file.</p></article><article><span>LINEAGE</span><h3>${datasets.reduce((sum, item) => sum + Number(item.row_count || 0), 0).toLocaleString()} normalized rows</h3><p>Original file names, upload timestamps, coverage and source identity remain attached.</p></article><article><span>ENTERPRISE CONTROLS</span><h3>Not configured</h3><p>SSO, role provisioning and immutable enterprise audit logs require deployment-specific services.</p></article>`;
 }
 
 function formatDataHubDate(value) {
   if (!value) return "coverage not detected";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+// Compact month labels used on chart axes and period summaries (for example Jan-25).
+function formatMonthYear(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const raw = String(value).trim();
+  const yearMonth = raw.match(/^(\d{4})-(\d{1,2})(?:-|$)/);
+  const date = yearMonth ? new Date(Date.UTC(Number(yearMonth[1]), Number(yearMonth[2]) - 1, 1)) : new Date(value);
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" }).replace(" ", "-");
 }
 
 function setDataHubTab(tab) {
@@ -752,7 +1299,7 @@ async function proposeDataHubRelationship() {
 
 function renderDataHubRelationshipProposal(payload) {
   const container = document.getElementById("datahub-relationship-result");
-  container.innerHTML = `<div class="datahub-proposal"><header><div><span>PROPOSED · REVIEW REQUIRED</span><strong>${escapeHtml(payload.question || "Cross-source analytical relationship")}</strong></div><button type="button" data-approve-relation="${escapeAttr(payload.id)}">Approve relationship</button></header>${payload.links.map(link => `<article><strong>${escapeHtml(link.left_dataset)} ↔ ${escapeHtml(link.right_dataset)}</strong><small>${escapeHtml(labelize(link.status))}</small><div>${link.candidate_keys.length ? link.candidate_keys.map(key => `<span>${escapeHtml(key.left_field)} = ${escapeHtml(key.right_field)}</span>`).join("") : "<em>No safe shared key detected</em>"}</div></article>`).join("")}<footer>${payload.guardrails.map(item => `<span>${escapeHtml(item)}</span>`).join("")}</footer></div>`;
+  container.innerHTML = `<div class="datahub-proposal"><header><div><span>JOIN PROPOSAL · REVIEW REQUIRED</span><strong>${escapeHtml(payload.question || "Cross-source analytical relationship")}</strong></div><button type="button" data-approve-relation="${escapeAttr(payload.id)}">Approve join proposal</button></header>${payload.links.map(link => `<article><strong>${escapeHtml(link.left_dataset)} ↔ ${escapeHtml(link.right_dataset)}</strong><small>${escapeHtml(labelize(link.status))}</small><div>${link.candidate_keys.length ? link.candidate_keys.map(key => `<span>${escapeHtml(key.left_field)} = ${escapeHtml(key.right_field)}</span>`).join("") : "<em>No safe shared key detected</em>"}</div></article>`).join("")}<footer>${payload.guardrails.map(item => `<span>${escapeHtml(item)}</span>`).join("")}<span>Approval records the reviewed proposal; it does not materialize or execute a join.</span></footer></div>`;
   container.querySelector("[data-approve-relation]").addEventListener("click", event => approveDataHubRelationship(event.currentTarget.dataset.approveRelation));
 }
 
@@ -763,7 +1310,7 @@ async function approveDataHubRelationship(id) {
     const response = await fetch(`/api/data-hub/relationships/${encodeURIComponent(id)}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approved: true }) });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || "Approval failed");
-    button.textContent = "Approved"; button.classList.add("approved");
+    button.textContent = "Proposal approved"; button.classList.add("approved");
     await loadDataHubSummary();
   } catch (error) { button.disabled = false; button.textContent = error.message; }
 }
@@ -783,7 +1330,11 @@ async function loadDataHubPreview() {
     document.getElementById("datahub-viz-x").innerHTML = `<option value="">Select field</option>${columns.map(column => `<option value="${escapeAttr(column)}">${escapeHtml(column)}</option>`).join("")}`;
     document.getElementById("datahub-viz-y").innerHTML = `<option value="">Select field</option>${columns.filter(column => numeric.has(column)).map(column => `<option value="${escapeAttr(column)}">${escapeHtml(column)}</option>`).join("")}`;
     document.getElementById("datahub-viz-x").value = payload.dataset.date_columns?.[0] || columns.find(column => !numeric.has(column)) || columns[0] || "";
-    document.getElementById("datahub-viz-y").value = payload.dataset.numeric_columns?.[0] || "";
+    const preferredMeasure = (payload.dataset.numeric_columns || []).find(column =>
+      /(value|quantity|volume|weight|amount|tonne|metric|price|rate)/i.test(column) &&
+      !/(^|_)(id|code|year|month|day|index)($|_)/i.test(column)
+    );
+    document.getElementById("datahub-viz-y").value = preferredMeasure || payload.dataset.numeric_columns?.find(column => !/(^|_)(id|code|year|month|day|index)($|_)/i.test(column)) || payload.dataset.numeric_columns?.[0] || "";
     document.getElementById("datahub-chart-kicker").textContent = DATA_HUB_PROVIDER_LABELS[payload.dataset.provider];
     document.getElementById("datahub-chart-title").textContent = payload.dataset.dataset_name;
     document.getElementById("datahub-chart-subtitle").textContent = `${Number(payload.dataset.row_count).toLocaleString()} rows · ${formatDataHubDate(payload.dataset.data_start)} to ${formatDataHubDate(payload.dataset.data_end)}`;
@@ -807,31 +1358,73 @@ function renderDataHubVisualization() {
   const yField = document.getElementById("datahub-viz-y").value;
   const type = document.getElementById("datahub-viz-type").value;
   const container = document.getElementById("datahub-chart");
+  const titleNode = document.getElementById("datahub-chart-title");
+  const subtitleNode = document.getElementById("datahub-chart-subtitle");
   const points = (payload.rows || []).map(row => ({ x: row[xField], y: Number(row[yField]) })).filter(point => point.x !== null && point.x !== undefined && Number.isFinite(point.y));
   if (!xField || !yField || points.length < 2) { container.innerHTML = `<div class="datahub-empty"><strong>Choose compatible X and Y fields</strong><span>A chart needs at least two valid observations.</span></div>`; return; }
+  const parsedX = points.map(point => Number(point.x));
+  const numericX = parsedX.every(value => Number.isFinite(value));
+  const dateX = points.every(point => !Number.isNaN(Date.parse(String(point.x)))) && points.some(point => /[-/]/.test(String(point.x)));
+  points.sort((a, b) => numericX ? Number(a.x) - Number(b.x) : dateX ? Date.parse(String(a.x)) - Date.parse(String(b.x)) : String(a.x).localeCompare(String(b.x)));
   const width = 900, height = 310, margin = { left: 62, right: 24, top: 24, bottom: 58 };
   const innerW = width - margin.left - margin.right, innerH = height - margin.top - margin.bottom;
   const values = points.map(point => point.y); const minY = type === "bar" ? 0 : Math.min(...values); const maxY = Math.max(...values); const spanY = maxY - minY || 1;
   const yPos = value => margin.top + innerH - ((value - minY) / spanY) * innerH;
-  const xPos = index => margin.left + (points.length === 1 ? innerW / 2 : (index / (points.length - 1)) * innerW);
+  const xMin = numericX ? Math.min(...points.map(point => Number(point.x))) : 0;
+  const xMax = numericX ? Math.max(...points.map(point => Number(point.x))) : Math.max(points.length - 1, 1);
+  const xPos = (index, point) => numericX && xMax !== xMin ? margin.left + ((Number(point.x) - xMin) / (xMax - xMin)) * innerW : margin.left + (points.length === 1 ? innerW / 2 : (index / (points.length - 1)) * innerW);
   const ticks = [0, .25, .5, .75, 1];
   let marks = "";
   if (type === "bar") {
     const barWidth = Math.max(2, Math.min(34, innerW / points.length * .68));
-    marks = points.map((point, index) => `<rect x="${xPos(index) - barWidth / 2}" y="${yPos(point.y)}" width="${barWidth}" height="${margin.top + innerH - yPos(point.y)}" fill="#0b5b9c"><title>${escapeHtml(String(point.x))}: ${point.y.toLocaleString()}</title></rect>`).join("");
+    marks = points.map((point, index) => `<rect x="${xPos(index, point) - barWidth / 2}" y="${yPos(point.y)}" width="${barWidth}" height="${margin.top + innerH - yPos(point.y)}" fill="#0b5b9c"><title>${escapeHtml(String(point.x))}: ${point.y.toLocaleString()}</title></rect>`).join("");
   } else if (type === "scatter") {
-    marks = points.map((point, index) => `<circle cx="${xPos(index)}" cy="${yPos(point.y)}" r="4" fill="#ef3d48" stroke="#fff" stroke-width="1.5"><title>${escapeHtml(String(point.x))}: ${point.y.toLocaleString()}</title></circle>`).join("");
+    marks = points.map((point, index) => `<circle cx="${xPos(index, point)}" cy="${yPos(point.y)}" r="4" fill="#ef3d48" stroke="#fff" stroke-width="1.5"><title>${escapeHtml(String(point.x))}: ${point.y.toLocaleString()}</title></circle>`).join("");
+  } else if (type === "lollipop" || type === "dot") {
+    marks = points.map((point, index) => { const cx = xPos(index, point), cy = yPos(point.y); return `${type === "lollipop" ? `<line x1="${cx}" x2="${cx}" y1="${margin.top + innerH}" y2="${cy}" stroke="#8fb4d0"/>` : ""}<circle cx="${cx}" cy="${cy}" r="${type === "dot" ? 5 : 6}" fill="#ef3d48" stroke="#fff" stroke-width="1.5"><title>${escapeHtml(String(point.x))}: ${point.y.toLocaleString()}</title></circle>`; }).join("");
   } else {
-    const path = points.map((point, index) => `${index ? "L" : "M"}${xPos(index).toFixed(1)},${yPos(point.y).toFixed(1)}`).join(" ");
-    marks = `<path d="${path}" fill="none" stroke="#0b5b9c" stroke-width="3"/>${points.map((point, index) => `<circle cx="${xPos(index)}" cy="${yPos(point.y)}" r="3.5" fill="#fff" stroke="#0b5b9c" stroke-width="2"><title>${escapeHtml(String(point.x))}: ${point.y.toLocaleString()}</title></circle>`).join("")}`;
+    const path = points.map((point, index) => `${index ? "L" : "M"}${xPos(index, point).toFixed(1)},${yPos(point.y).toFixed(1)}`).join(" ");
+    const steppedPath = points.map((point, index) => { if (!index) return `M${xPos(index, point).toFixed(1)},${yPos(point.y).toFixed(1)}`; const prev = points[index - 1]; return `${type === "step" ? `H${xPos(index, point).toFixed(1)} V${yPos(point.y).toFixed(1)}` : `L${xPos(index, point).toFixed(1)},${yPos(point.y).toFixed(1)}`}`; }).join(" ");
+    const fill = type === "area" ? `<path d="${steppedPath} L${xPos(points.length-1, points.at(-1)).toFixed(1)},${margin.top+innerH} L${xPos(0, points[0]).toFixed(1)},${margin.top+innerH} Z" fill="#cfe1f0" opacity=".65"/>` : "";
+    marks = `${fill}<path d="${steppedPath}" fill="none" stroke="#0b5b9c" stroke-width="3"/>${points.map((point, index) => `<circle cx="${xPos(index, point)}" cy="${yPos(point.y)}" r="3.5" fill="#fff" stroke="#0b5b9c" stroke-width="2"><title>${escapeHtml(String(point.x))}: ${point.y.toLocaleString()}</title></circle>`).join("")}`;
   }
-  const labelIndexes = Array.from(new Set([0, Math.floor((points.length - 1) / 2), points.length - 1]));
+  const labelCount = Math.min(7, points.length);
+  const labelIndexes = Array.from(new Set(Array.from({ length: labelCount }, (_, index) => Math.round(index * (points.length - 1) / Math.max(1, labelCount - 1)))));
+  const xLabel = dateX ? "Reporting period" : xField;
+  const yLabel = yField;
+  const typeNames = { line: "Trend", bar: "Category comparison", area: "Area trend", scatter: "Relationship", step: "Step trend", lollipop: "Lollipop ranking", dot: "Dot plot", histogram: "Distribution", pie: "Composition", heatmap: "Intensity map", table: "Data table" };
+  if (titleNode) titleNode.textContent = `${typeNames[type] || "Chart"}: ${yField}`;
+  if (subtitleNode) subtitleNode.textContent = `${yLabel} by ${xLabel} · ${points.length.toLocaleString()} valid observations · sorted for readability`;
+  if (type === "table") {
+    container.innerHTML = `<table class="gtt-mini-table datahub-chart-table"><thead><tr><th>${escapeHtml(xLabel)}</th><th>${escapeHtml(yLabel)}</th></tr></thead><tbody>${points.slice(0, 100).map(point => `<tr><td>${escapeHtml(String(point.x))}</td><td>${point.y.toLocaleString()}</td></tr>`).join("")}</tbody></table><small class="datahub-chart-note">Showing ${Math.min(100, points.length).toLocaleString()} of ${points.length.toLocaleString()} valid observations.</small>`;
+    return;
+  }
+  if (type === "histogram") {
+    const bins = Math.min(10, Math.max(4, Math.ceil(Math.sqrt(points.length))));
+    const lo = Math.min(...values), hi = Math.max(...values), span = hi - lo || 1;
+    const counts = Array.from({ length: bins }, () => 0);
+    values.forEach(value => counts[Math.min(bins - 1, Math.floor((value - lo) / span * bins))]++);
+    const maxCount = Math.max(...counts, 1), binW = innerW / bins;
+    marks = counts.map((count, index) => { const x = margin.left + index * binW + 2, h = count / maxCount * innerH; return `<rect x="${x}" y="${margin.top + innerH - h}" width="${Math.max(2, binW - 4)}" height="${h}" fill="#0b5b9c"><title>${count} observations</title></rect>`; }).join("");
+  } else if (type === "pie") {
+    const total = values.reduce((sum, value) => sum + Math.max(0, value), 0) || 1; let angle = -Math.PI / 2;
+    const cx = width / 2, cy = margin.top + innerH / 2, radius = Math.min(innerH, innerW) * .34;
+    const colors = ["#0b5b9c", "#ef3d48", "#d8902f", "#4f8fba", "#7d65a8", "#4e9b73"];
+    marks = points.slice(0, 8).map((point, index) => { const start = angle, end = angle + Math.max(0, point.y) / total * Math.PI * 2; angle = end; const x1 = cx + radius * Math.cos(start), y1 = cy + radius * Math.sin(start), x2 = cx + radius * Math.cos(end), y2 = cy + radius * Math.sin(end), large = end - start > Math.PI ? 1 : 0; return `<path d="M ${cx} ${cy} L ${x1} ${y1} A ${radius} ${radius} 0 ${large} 1 ${x2} ${y2} Z" fill="${colors[index % colors.length]}" stroke="#fff" stroke-width="2"><title>${escapeHtml(String(point.x))}: ${point.y.toLocaleString()}</title></path>`; }).join("");
+  } else if (type === "heatmap") {
+    const cellW = innerW / points.length, max = Math.max(...values, 1);
+    marks = points.map((point, index) => { const alpha = .12 + Math.max(0, point.y) / max * .82; return `<rect x="${margin.left + index * cellW}" y="${margin.top + innerH * .25}" width="${Math.max(1, cellW - 1)}" height="${innerH * .5}" fill="rgba(11,91,156,${alpha})"><title>${escapeHtml(String(point.x))}: ${point.y.toLocaleString()}</title></rect>`; }).join("");
+  }
+  if (type === "histogram" || type === "pie" || type === "heatmap") {
+    container.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeAttr(typeNames[type])} of ${escapeAttr(yField)}">${type === "pie" ? "" : ticks.map(tick => { const y = margin.top + innerH * (1 - tick); const value = minY + spanY * tick; return `<line x1="${margin.left}" x2="${width - margin.right}" y1="${y}" y2="${y}" stroke="#dce3e8"/><text x="${margin.left - 9}" y="${y + 4}" text-anchor="end">${Number(value.toFixed(2)).toLocaleString()}</text>`; }).join("")}${marks}</svg>`;
+    return;
+  }
   container.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeAttr(yField)} by ${escapeAttr(xField)}">
     ${ticks.map(tick => { const y = margin.top + innerH * (1 - tick); const value = minY + spanY * tick; return `<line x1="${margin.left}" x2="${width - margin.right}" y1="${y}" y2="${y}" stroke="#dce3e8"/><text x="${margin.left - 9}" y="${y + 4}" text-anchor="end">${Number(value.toFixed(2)).toLocaleString()}</text>`; }).join("")}
     ${marks}
-    ${labelIndexes.map(index => `<text x="${xPos(index)}" y="${height - 30}" text-anchor="middle">${escapeHtml(String(points[index].x).slice(0, 24))}</text>`).join("")}
-    <text x="${width / 2}" y="${height - 5}" text-anchor="middle" class="axis-title">${escapeHtml(xField)}</text>
-    <text transform="translate(15 ${height / 2}) rotate(-90)" text-anchor="middle" class="axis-title">${escapeHtml(yField)}</text>
+    ${labelIndexes.map(index => `<text x="${xPos(index, points[index])}" y="${height - 30}" text-anchor="middle">${escapeHtml(dateX ? formatMonthYear(points[index].x) : String(points[index].x).slice(0, 18))}</text>`).join("")}
+    <text x="${width / 2}" y="${height - 5}" text-anchor="middle" class="axis-title">${escapeHtml(xLabel)}</text>
+    <text transform="translate(15 ${height / 2}) rotate(-90)" text-anchor="middle" class="axis-title">${escapeHtml(yLabel)}</text>
   </svg>`;
 }
 
@@ -1005,6 +1598,7 @@ function renderRiverLevels() {
 
 function riverDetails(row) {
   const details = [
+    ["Commercial trade role", row.trade_relevance || "Reviewed commercial navigation corridor"],
     ["Current level", riverValue(row.level, row.level_unit)],
     ["Normal / reference", riverValue(row.normal_level, row.normal_unit || row.level_unit)],
     ["Normal range", row.normal_low == null || row.normal_high == null ? "Not available from this feed" : `${riverValue(row.normal_low, row.normal_unit)} – ${riverValue(row.normal_high, row.normal_unit)}`],
@@ -1062,9 +1656,9 @@ function renderRiverWorkspace() {
     ["Visible gauges", rows.length], ["Below normal", low], ["Above normal", high], ["Baseline coverage", `${baseline} / ${rows.length}`], ["Countries", countries]
   ].map(item => `<article><span>${escapeHtml(item[0])}</span><strong>${typeof item[1] === "number" ? Number(item[1]).toLocaleString() : escapeHtml(item[1])}</strong></article>`).join("");
   const table = document.getElementById("river-workspace-table");
-  table.innerHTML = rows.length ? `<table><thead><tr><th>Waterway / station</th><th>Current</th><th>Normal</th><th>Normal range</th><th>Difference</th><th>24h / 7d</th><th>Comparison</th><th>Observed / source</th><th></th></tr></thead><tbody>${rows.map(row => `<tr class="river-status-${escapeAttr(row.comparison_status)}"><td><strong>${escapeHtml(row.waterbody)}</strong><small>${escapeHtml(row.station)} · ${escapeHtml(row.country)}</small></td><td>${escapeHtml(riverValue(row.level, row.level_unit))}</td><td>${escapeHtml(riverValue(row.normal_level, row.normal_unit || row.level_unit))}</td><td>${row.normal_low == null ? "—" : `${escapeHtml(riverValue(row.normal_low, row.normal_unit))}<small>to ${escapeHtml(riverValue(row.normal_high, row.normal_unit))}</small>`}</td><td>${row.difference_from_normal == null ? "—" : `${row.difference_from_normal > 0 ? "+" : ""}${escapeHtml(riverValue(row.difference_from_normal, row.normal_unit || row.level_unit))}<small>${row.percent_from_normal > 0 ? "+" : ""}${escapeHtml(String(row.percent_from_normal))}%</small>`}</td><td>${row.change_24h == null ? "—" : `${row.change_24h > 0 ? "+" : ""}${escapeHtml(riverValue(row.change_24h, row.change_unit))}`}<small>7d ${row.change_7d == null ? "—" : `${row.change_7d > 0 ? "+" : ""}${escapeHtml(riverValue(row.change_7d, row.change_unit))}`}</small></td><td><b>${escapeHtml(riverComparisonLabel(row))}</b></td><td>${escapeHtml(riverObservedTimestamp(row))}<small>${escapeHtml(row.source_name)}</small></td><td><button type="button" data-river-id="${escapeAttr(row.id)}">Details</button></td></tr>`).join("")}</tbody></table>` : `<div class="weather-empty-state">No gauges match these filters.</div>`;
+  table.innerHTML = rows.length ? `<table><thead><tr><th>Waterway / station</th><th>Trade role</th><th>Current</th><th>Normal</th><th>Normal range</th><th>Difference</th><th>24h / 7d</th><th>Comparison</th><th>Observed / source</th><th></th></tr></thead><tbody>${rows.map(row => `<tr class="river-status-${escapeAttr(row.comparison_status)}"><td><strong>${escapeHtml(row.waterbody)}</strong><small>${escapeHtml(row.station)} · ${escapeHtml(row.country)}</small></td><td>${escapeHtml(row.trade_relevance || "Commercial navigation corridor")}</td><td>${escapeHtml(riverValue(row.level, row.level_unit))}</td><td>${escapeHtml(riverValue(row.normal_level, row.normal_unit || row.level_unit))}</td><td>${row.normal_low == null ? "—" : `${escapeHtml(riverValue(row.normal_low, row.normal_unit))}<small>to ${escapeHtml(riverValue(row.normal_high, row.normal_unit))}</small>`}</td><td>${row.difference_from_normal == null ? "—" : `${row.difference_from_normal > 0 ? "+" : ""}${escapeHtml(riverValue(row.difference_from_normal, row.normal_unit || row.level_unit))}<small>${row.percent_from_normal > 0 ? "+" : ""}${escapeHtml(String(row.percent_from_normal))}%</small>`}</td><td>${row.change_24h == null ? "—" : `${row.change_24h > 0 ? "+" : ""}${escapeHtml(riverValue(row.change_24h, row.change_unit))}`}<small>7d ${row.change_7d == null ? "—" : `${row.change_7d > 0 ? "+" : ""}${escapeHtml(riverValue(row.change_7d, row.change_unit))}`}</small></td><td><b>${escapeHtml(riverComparisonLabel(row))}</b></td><td>${escapeHtml(riverObservedTimestamp(row))}<small>${escapeHtml(row.source_name)}</small></td><td><button type="button" data-river-id="${escapeAttr(row.id)}">Details</button></td></tr>`).join("")}</tbody></table>` : `<div class="weather-empty-state">No gauges match these filters.</div>`;
   const cards = document.getElementById("river-workspace-cards");
-  cards.innerHTML = rows.length ? rows.map(row => `<article class="river-workspace-card river-status-${escapeAttr(row.comparison_status)}"><header><div><span>${escapeHtml(row.waterbody_type)} · ${escapeHtml(row.country)}</span><h2>${escapeHtml(row.station)}</h2><p>${escapeHtml(row.waterbody)}</p></div><b>${escapeHtml(riverComparisonLabel(row))}</b></header><div class="river-level-hero"><div><small>Current level</small><strong>${escapeHtml(riverValue(row.level, row.level_unit))}</strong></div><span>Observed<br>${escapeHtml(riverObservedTimestamp(row))}</span></div>${riverSparkline(row)}<div class="weather-workspace-metrics">${riverDetails(row).slice(1, 9).map(item => `<div><span>${escapeHtml(item[0])}</span><strong>${escapeHtml(item[1])}</strong></div>`).join("")}</div><p><strong>Basis:</strong> ${escapeHtml(row.normal_basis || "Not available from this official feed")}</p><button type="button" data-river-id="${escapeAttr(row.id)}">Open gauge details</button></article>`).join("") : `<div class="weather-empty-state">No gauges match these filters.</div>`;
+  cards.innerHTML = rows.length ? rows.map(row => `<article class="river-workspace-card river-status-${escapeAttr(row.comparison_status)}"><header><div><span>${escapeHtml(row.waterbody_type)} · ${escapeHtml(row.country)}</span><h2>${escapeHtml(row.station)}</h2><p>${escapeHtml(row.waterbody)}</p></div><b>${escapeHtml(riverComparisonLabel(row))}</b></header><p><strong>Trade role:</strong> ${escapeHtml(row.trade_relevance || "Commercial navigation corridor")}</p><div class="river-level-hero"><div><small>Current level</small><strong>${escapeHtml(riverValue(row.level, row.level_unit))}</strong></div><span>Observed<br>${escapeHtml(riverObservedTimestamp(row))}</span></div>${riverSparkline(row)}<div class="weather-workspace-metrics">${riverDetails(row).slice(2, 10).map(item => `<div><span>${escapeHtml(item[0])}</span><strong>${escapeHtml(item[1])}</strong></div>`).join("")}</div><p><strong>Basis:</strong> ${escapeHtml(row.normal_basis || "Not available from this official feed")}</p><button type="button" data-river-id="${escapeAttr(row.id)}">Open gauge details</button></article>`).join("") : `<div class="weather-empty-state">No gauges match these filters.</div>`;
   document.querySelectorAll("[data-river-id]").forEach(button => button.addEventListener("click", () => {
     const row = state.riverRows.find(item => item.id === button.dataset.riverId);
     if (row) showRiverLevelCard(row);
@@ -1073,7 +1667,7 @@ function renderRiverWorkspace() {
 
 function renderRiverSources() {
   const container = document.getElementById("river-source-list");
-  container.innerHTML = state.riverSources.map(source => `<article class="river-source-card source-${escapeAttr(source.status)}"><header><strong>${escapeHtml(source.authority)}</strong><b>${escapeHtml(source.status.replaceAll("_", " "))}</b></header><span>${escapeHtml(source.region)} · ${escapeHtml(source.waterways)}</span><p>${escapeHtml(source.metrics)}</p><small>${escapeHtml(source.access)} · ${escapeHtml(source.frequency)}</small><a href="${escapeAttr(source.url)}" target="_blank" rel="noopener">Open official source</a></article>`).join("");
+  container.innerHTML = state.riverSources.map(source => `<article class="river-source-card source-${escapeAttr(source.status)}"><header><strong>${escapeHtml(source.authority)}</strong><b>${escapeHtml(source.status.replaceAll("_", " "))}</b></header><span>${escapeHtml(source.region)} · ${escapeHtml(source.waterways)}</span><p>${escapeHtml(source.metrics)}</p><small>${escapeHtml(source.availability || "Availability not assessed")}</small><small>${escapeHtml(source.access)} · ${escapeHtml(source.frequency)}</small><a href="${escapeAttr(source.url)}" target="_blank" rel="noopener">Open official source</a></article>`).join("");
 }
 
 function setCoastalWeatherEnabled(enabled) {
@@ -1111,7 +1705,11 @@ function focusCoastalWeatherSource() {
     philippines: [[12.5, 122], 5], singapore: [[1.28, 103.82], 9],
     brunei: [[4.7, 114.7], 7], cambodia: [[11.3, 103.8], 6],
     myanmar: [[16, 96], 5], vietnam: [[14.5, 108.5], 5], china: [[29, 119], 4],
-    sea: [[5, 111], 4], all: [[8, 103], 3]
+    sea: [[5, 111], 4], australia: [[-25, 134], 4],
+    united_states: [[38, -97], 4], canada: [[50, -97], 3], japan: [[36, 138], 5],
+    europe: [[51, 10], 4], south_america: [[-20, -58], 3],
+    africa: [[-12, 20], 3], middle_east: [[24, 48], 4],
+    major_ports: [[15, 150], 2], all: [[12, 112], 2]
   };
   const target = views[state.coastalWeatherSource];
   if (target) state.map.flyTo(target[0], target[1]);
@@ -1147,6 +1745,11 @@ function updateCoastalWeatherDownload() {
       ? "/api/bmkg/marine-weather/export.csv"
       : `/api/coastal-weather/export.csv?source=${encodeURIComponent(source)}`;
   document.getElementById("coastal-weather-download").href = href;
+  const report = document.getElementById("coastal-weather-port-report");
+  report.hidden = source === "cyclones";
+  if (source !== "cyclones") {
+    report.href = `/api/coastal-weather/port-report.xlsx?source=${encodeURIComponent(source)}`;
+  }
 }
 
 function imdForecastDay() {
@@ -1161,6 +1764,20 @@ async function requestCoastalWeather(provider, force) {
     endpoint = `/api/imd/coastal-weather${force ? "/refresh" : ""}?day=${imdForecastDay()}`;
   } else if (provider === "bmkg") {
     endpoint = `/api/bmkg/marine-weather${force ? "/refresh" : ""}?hours=${state.coastalWeatherHours}`;
+  } else if (provider === "major") {
+    const countryNames = {
+      australia: "Australia", united_states: "United States", canada: "Canada", japan: "Japan"
+    };
+    const regionNames = {
+      europe: "Europe", south_america: "South America", africa: "Africa", middle_east: "Middle East"
+    };
+    const country = countryNames[state.coastalWeatherSource]
+      ? `&country=${encodeURIComponent(countryNames[state.coastalWeatherSource])}`
+      : "";
+    const region = regionNames[state.coastalWeatherSource]
+      ? `&region=${encodeURIComponent(regionNames[state.coastalWeatherSource])}`
+      : "";
+    endpoint = `/api/major-port-weather${force ? "/refresh" : ""}?hours=${state.coastalWeatherHours}${country}${region}`;
   } else {
     const country = new Set(["malaysia", "thailand", "philippines", "singapore", "brunei", "cambodia", "myanmar", "vietnam", "china"])
       .has(state.coastalWeatherSource)
@@ -1210,7 +1827,7 @@ async function loadCoastalWeather(force = false) {
     ? "Refreshing official coastal forecasts…"
     : "Loading official coastal forecasts…";
   const providers = state.coastalWeatherSource === "all"
-    ? ["cyclone", "imd", "bmkg", "sea"]
+    ? ["cyclone", "imd", "bmkg", "sea", "major"]
     : state.coastalWeatherSource === "both"
       ? ["imd", "bmkg"]
       : state.coastalWeatherSource === "india"
@@ -1219,6 +1836,8 @@ async function loadCoastalWeather(force = false) {
           ? ["bmkg"]
           : state.coastalWeatherSource === "cyclones"
             ? ["cyclone"]
+          : new Set(["australia", "united_states", "canada", "japan", "europe", "south_america", "africa", "middle_east", "major_ports"]).has(state.coastalWeatherSource)
+            ? ["major"]
           : ["sea"];
   try {
     const results = await Promise.allSettled(
@@ -1227,6 +1846,7 @@ async function loadCoastalWeather(force = false) {
     const rows = [];
     const updated = [];
     const errors = [];
+    const staleProviders = [];
     results.forEach((result, index) => {
       const provider = providers[index];
       if (result.status === "rejected") {
@@ -1237,6 +1857,13 @@ async function loadCoastalWeather(force = false) {
       const payloadRows = Array.isArray(payload.rows) ? payload.rows : [];
       rows.push(...(provider === "imd" ? payloadRows.map(normalizeImdWeather) : payloadRows));
       if (payload.fetched_at) updated.push(new Date(payload.fetched_at).getTime());
+      if (payload.stale || payload.last_error) {
+        const label = provider === "imd" ? "India / IMD" : provider.toUpperCase();
+        const age = Number.isFinite(Number(payload.refresh_age_hours))
+          ? ` cached ${Number(payload.refresh_age_hours).toFixed(1)} h ago`
+          : " cache status unknown";
+        staleProviders.push(`${label}${age}${payload.last_error ? ` · refresh issue: ${payload.last_error}` : ""}`);
+      }
     });
     if (!rows.length) throw new Error(errors.join("; ") || "No published weather values returned");
     state.coastalWeatherRows = rows;
@@ -1249,6 +1876,7 @@ async function loadCoastalWeather(force = false) {
     const areaCount = visible.filter(row => row.location_type === "water").length;
     const latest = updated.length ? new Date(Math.max(...updated)).toLocaleString() : "time unavailable";
     status.textContent = `${stormCount} active cyclones · ${areaCount} forecast areas · ${portCount} port forecasts · updated ${latest}` +
+      (staleProviders.length ? ` · STALE: ${staleProviders.join("; ")}` : "") +
       (errors.length ? ` · ${errors.join("; ")}` : "");
   } catch (error) {
     status.textContent = `Weather unavailable: ${error.message}`;
@@ -1299,6 +1927,10 @@ function weatherVisibleRows() {
   const params = state.coastalWeatherParameters;
   return state.coastalWeatherRows.filter(row => (
     (state.coastalWeatherLocationType === "all" || row.location_type === state.coastalWeatherLocationType)
+  )).filter(row => (
+    state.coastalWeatherDataClass === "all" || row.data_class === state.coastalWeatherDataClass
+  )).filter(row => (
+    state.coastalWeatherPortStatus === "all" || row.port_operational_status === state.coastalWeatherPortStatus
   )).filter(row => (
     (row.location_type === "storm" && params.has("cyclone")) ||
     (row.location_type === "port" && params.size > 0) ||
@@ -1362,6 +1994,15 @@ function weatherDirectionRange(from, to, mode = "from") {
   return `${prefix} ${start}–${end}`;
 }
 
+function coastalPortDisplayName(row) {
+  const name = String(row.location_name || row.zone_name || "Unknown").trim();
+  if (row.location_type !== "port") return name;
+  return name
+    .replace(/\s+(?:coal|dry[- ]?bulk|container|oil|lng)\s+terminal\b/gi, "")
+    .replace(/\s+\((?:coal|dry[- ]?bulk|container|oil|lng)\s+terminal\)$/i, "")
+    .trim() || name;
+}
+
 function coastalWeatherTooltip(row) {
   const warningReason = weatherWarningReason(row);
   const warning = state.coastalWeatherParameters.has("warning") && warningReason
@@ -1404,7 +2045,7 @@ function coastalWeatherTooltip(row) {
   return `
     <div class="weather-tooltip">
       <span class="weather-tooltip-kicker">${escapeHtml(row.provider || "OFFICIAL")} · ${escapeHtml((row.location_type || "area").toUpperCase())}</span>
-      <h3>${escapeHtml(row.location_name || row.zone_name)}</h3>
+      <h3>${escapeHtml(coastalPortDisplayName(row))}</h3>
       ${warning}${rain}${wind}${waves}${current}${visibility}${air}${tides}
       <small>${escapeHtml(weatherPeriod(row))}</small>
       <small>${source} · forecast, not for navigation</small>
@@ -1540,6 +2181,10 @@ function weatherDetailEntries(row) {
     }
   };
   add("Weather", row.weather_condition || row.rainfall_category);
+  add("Port operating status", row.location_type === "port" ? (row.port_operational_status || "Not reported") : null);
+  add("Operational notice", row.operational_notice);
+  add("Next 24 hours", row.forecast_24h);
+  add("Next 72 hours", row.forecast_72h);
   add("Adverse weather", weatherAdverseCondition(row) || "None reported");
   if (row.wind_speed_min_kn != null || row.wind_speed_max_kn != null || row.wind_speed_min_kmph != null || row.wind_speed_max_kmph != null) {
     add("Wind speed", weatherWindRange(row));
@@ -1561,6 +2206,10 @@ function weatherDetailEntries(row) {
   add("Official marine area", row.marine_area);
   add("Offshore wave area", row.offshore_marine_area);
   add("Forecast basis", row.forecast_basis);
+  add("Data classification", row.data_class ? row.data_class.replaceAll("_", " ") : null);
+  add("Data confidence", row.data_confidence ? `${row.data_confidence} · quality ${row.quality_score}/100` : null);
+  add("Freshness", row.freshness_status ? `${row.freshness_status}${row.freshness_age_hours == null ? "" : ` · ${row.freshness_age_hours} h`}` : null);
+  add("Source authority", row.source_authority);
   if (row.temperature_min_c != null || row.temperature_max_c != null) {
     add("Temperature", weatherRange(row.temperature_min_c, row.temperature_max_c, "°C"));
   }
@@ -1569,7 +2218,6 @@ function weatherDetailEntries(row) {
   }
   add("High tide", row.high_tide_height_m == null ? null : `${weatherValue(row.high_tide_height_m, "m")} · ${row.high_tide_time || "time unavailable"}`);
   add("Low tide", row.low_tide_height_m == null ? null : `${weatherValue(row.low_tide_height_m, "m")} · ${row.low_tide_time || "time unavailable"}`);
-  add("Port type", row.port_type);
   add("Station note", row.station_remark);
   return details;
 }
@@ -1578,6 +2226,8 @@ function weatherWorkspaceRows() {
   const query = state.coastalWeatherQuery;
   return state.coastalWeatherRows
     .filter(row => state.coastalWeatherLocationType === "all" || row.location_type === state.coastalWeatherLocationType)
+    .filter(row => state.coastalWeatherDataClass === "all" || row.data_class === state.coastalWeatherDataClass)
+    .filter(row => state.coastalWeatherPortStatus === "all" || row.port_operational_status === state.coastalWeatherPortStatus)
     .filter(row => !query || `${row.location_name || row.zone_name || ""} ${row.country || ""} ${row.weather_condition || ""} ${row.basin || ""} ${row.ocean_or_sea || ""} ${(row.affected_countries || []).join?.(" ") || ""}`.toLowerCase().includes(query))
     .sort((a, b) => {
       const severityRank = { warning: 0, advisory: 1, normal: 2 };
@@ -1602,7 +2252,7 @@ function renderWeatherWorkspace() {
   document.getElementById("weather-surface-subtitle").textContent =
     `${typeLabel} · ${state.coastalWeatherHours ? `+${state.coastalWeatherHours} hours` : "current forecast"}`;
   const commonColumns = [
-    ["Location", row => row.location_name || row.zone_name || "Unknown"],
+    ["Location", row => coastalPortDisplayName(row)],
     ["Country", row => row.country || "—"],
     ["Type", row => row.location_type === "port" ? "Port" : "Marine area"],
     ["Forecast area", row => row.marine_area || "—"],
@@ -1610,6 +2260,9 @@ function renderWeatherWorkspace() {
     ["Wind", row => (row.wind_speed_max_kn != null || row.wind_speed_max_kmph != null) ? weatherWindRange(row) : "—"],
     ["Waves", row => row.wave_height_max_m == null ? "—" : weatherRange(row.wave_height_min_m, row.wave_height_max_m, "m")],
     ["Port risk", row => row.weather_risk_level || "—"],
+    ["Port status", row => row.location_type === "port" ? (row.port_operational_status || "Not reported") : "—"],
+    ["Data basis", row => row.data_class ? row.data_class.replaceAll("_", " ") : "—"],
+    ["Freshness", row => row.freshness_status || "unknown"],
     ["Adverse weather", row => weatherAdverseCondition(row) || "—"]
   ];
   const portColumns = [
@@ -1635,11 +2288,12 @@ function renderWeatherWorkspace() {
     const details = weatherDetailEntries(row);
     const warning = weatherWarningReason(row);
     const displaySeverity = warning ? "warning" : "normal";
-    const statusLabel = row.alert_level || row.weather_risk_level || displaySeverity;
+    const statusLabel = row.alert_level || (row.location_type === "port" ? row.port_operational_status : null) || row.weather_risk_level || displaySeverity;
     const locationType = row.location_type === "storm" ? "TROPICAL CYCLONE" : row.location_type === "port" ? "PORT" : "MARINE AREA";
     return `<article class="weather-workspace-card severity-${displaySeverity}">
-      <header><div><span>${escapeHtml(row.provider || "Official")} · ${locationType}</span><h2>${escapeHtml(row.location_name || row.zone_name)}</h2></div><b>${escapeHtml(statusLabel)}</b></header>
+      <header><div><span>${escapeHtml(row.provider || "Official")} · ${locationType}</span><h2>${escapeHtml(coastalPortDisplayName(row))}</h2></div><b>${escapeHtml(statusLabel)}</b></header>
       <p class="weather-workspace-period">${escapeHtml(weatherPeriod(row))}</p>
+      <p class="weather-workspace-provenance">${escapeHtml((row.data_class || "official forecast").replaceAll("_", " "))} · ${escapeHtml(row.data_confidence || "Confidence unknown")} confidence · ${escapeHtml(row.freshness_status || "freshness unknown")}</p>
       ${warning ? `<p class="weather-workspace-warning">${escapeHtml(warning)}</p>` : ""}
       ${row.location_type === "storm" ? `<div class="cyclone-card-motion" aria-label="Forecast movement ${escapeAttr(row.movement_direction || "unknown")}"><span>🌀</span><i></i><b>➤</b><small>${escapeHtml(row.movement_direction || "Direction not published")}</small></div>` : ""}
       <div class="weather-workspace-metrics">${details.map(item => `<div><span>${escapeHtml(item.label)}</span><strong>${escapeHtml(item.value)}</strong></div>`).join("")}</div>
@@ -1677,7 +2331,7 @@ function showCoastalWeatherCard(row) {
       : " Port values mapped from a marine area are labelled as area-based forecasts, not port observations.";
   document.getElementById("port-card-content").innerHTML =
     `<span class="detail-eyebrow">${escapeHtml(row.provider || "Official")} ${escapeHtml(row.location_type === "storm" ? "tropical-cyclone alert" : row.location_type === "port" ? "port forecast" : "marine-area forecast")}</span>` +
-    `<h2>${escapeHtml(row.location_name || row.zone_name)}</h2>` +
+    `<h2>${escapeHtml(coastalPortDisplayName(row))}</h2>` +
     `<p class="detail-meta">${escapeHtml(weatherPeriod(row))}</p>` +
     (portAlert ? `<div class="weather-port-alert-banner"><strong>Adverse weather</strong><span>${escapeHtml(portAlert)}</span></div>` : "") +
     `<div class="weather-card-severity severity-${warningReason ? "warning" : "normal"}">${escapeHtml(row.location_type === "storm" ? `${row.alert_level || "Active"} GDACS alert` : row.weather_risk_level ? `${row.weather_risk_level} port risk` : severity)}</div>` +
@@ -1778,9 +2432,9 @@ function renderCoastalWeather() {
     } else if (row.latitude != null && row.longitude != null) {
       center = L.latLng(Number(row.latitude), Number(row.longitude));
       const marker = L.circleMarker(center, {
-        radius: mapZoom >= 7 ? 5 : 3.5,
+        radius: row.location_type === "port" ? (mapZoom >= 7 ? 6 : 5) : (mapZoom >= 7 ? 5 : 3.5),
         color: "#ffffff",
-        weight: 1,
+        weight: row.location_type === "port" ? 1.5 : 1,
         fillColor: color,
         fillOpacity: 0.95,
         interactive: true
@@ -1792,6 +2446,19 @@ function renderCoastalWeather() {
       });
       marker.on("click", openWeatherDetails);
       marker.addTo(state.weatherLayer);
+      if (row.location_type === "port") {
+        const hitTarget = L.circleMarker(center, {
+          radius: mapZoom >= 7 ? 14 : 11,
+          stroke: false,
+          fill: true,
+          fillColor: "#2c91b4",
+          fillOpacity: 0.001,
+          interactive: true,
+          bubblingMouseEvents: false
+        });
+        hitTarget.on("click", openWeatherDetails);
+        hitTarget.addTo(state.weatherLayer);
+      }
     }
     if (!center) return;
     const portAlert = state.coastalWeatherParameters.has("warning")
@@ -1813,7 +2480,7 @@ function renderCoastalWeather() {
     const weatherMarker = L.marker(center, {
       interactive: true,
       keyboard: true,
-      title: `Open ${row.location_name || row.zone_name} weather report`,
+      title: `Open ${coastalPortDisplayName(row)} weather report`,
       icon: L.divIcon({
         className: "weather-symbol-marker",
         html: symbolHtml,
@@ -2467,9 +3134,7 @@ async function loadCoalAnalysis() {
 }
 
 function formatCoalPeriod(period) {
-  if (!/^\d{4}-\d{2}$/.test(String(period))) return String(period || "—");
-  const date = new Date(`${period}-01T00:00:00`);
-  return date.toLocaleDateString("en-IN", { month: "short", year: "numeric" });
+  return formatMonthYear(period);
 }
 
 async function setCoalDashboardTab(tab) {
@@ -2674,7 +3339,7 @@ function renderDynamicCoalChart(id, rows, chart) {
         Math.round(index * (rows.length - 1) / (maxAxisLabels - 1))
       ));
   const labels = rows.map((row, index) => labelIndexes.has(index)
-    ? `<text x="${x(index)}" y="${height - 35}" text-anchor="middle">${escapeHtml(String(row.period))}</text>`
+    ? `<text x="${x(index)}" y="${height - 35}" text-anchor="middle">${escapeHtml(formatMonthYear(row.period))}</text>`
     : "").join("");
   const marks = series.map(item => {
     if (chart.type === "stacked_column") {

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Howe Robinson | Global Assets Map</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="/static/css/style.css?v=20260825-river-levels-04" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260901-chart-switcher-2" />
 </head>
 <body>
   <div class="app-shell">
@@ -250,6 +250,22 @@
           </div>
         </details>
 
+        <details class="filter-section gtt-section" data-mode="gtt">
+          <summary>
+            <span><i class="section-icon gtt-icon"></i>GTT Trade Intelligence</span>
+            <span class="section-count" id="gtt-sidebar-status">Awaiting data</span>
+          </summary>
+          <div class="section-body">
+            <p class="workspace-intro">Explore, compare and govern GTT trade data using the app's shared master store.</p>
+            <div class="gtt-mini-status">
+              <div><span>GTT datasets</span><strong id="gtt-sidebar-datasets">0</strong></div>
+              <div><span>Validated rows</span><strong id="gtt-sidebar-rows">0</strong></div>
+            </div>
+            <button type="button" class="filter-button" id="gtt-open-workspace">Open GTT workspace</button>
+            <p class="source-note">Charts remain empty until a profiled GTT file or connector supplies source-backed records.</p>
+          </div>
+        </details>
+
         <details class="filter-section datahub-section" data-mode="datahub">
           <summary>
             <span><i class="section-icon datahub-icon"></i>Data Hub</span>
@@ -368,6 +384,15 @@
                 <option value="vietnam">Vietnam · NCHMF</option>
                 <option value="china">China · NMC coastal + offshore</option>
                 <option value="sea">Southeast Asia · all available</option>
+                <option value="australia">Australia · BOM coastal waters</option>
+                <option value="united_states">United States · NOAA/NWS marine</option>
+                <option value="canada">Canada · Environment Canada marine</option>
+                <option value="japan">Japan · JMA coastal forecasts</option>
+                <option value="europe">Europe · major dry-bulk ports</option>
+                <option value="south_america">South America · major dry-bulk ports</option>
+                <option value="africa">Africa · major dry-bulk ports</option>
+                <option value="middle_east">Middle East / Gulf · major dry-bulk ports</option>
+                <option value="major_ports">Major dry-bulk ports · all new regions</option>
               </select>
             </label>
             <label class="weather-field" for="coastal-weather-day">
@@ -395,6 +420,26 @@
                 <option value="storm">Cyclones / typhoons only</option>
               </select>
             </label>
+            <label class="weather-field" for="coastal-weather-data-class">
+              <span>Forecast basis</span>
+              <select id="coastal-weather-data-class">
+                <option value="all" selected>All official records</option>
+                <option value="official_port_forecast">Port-specific forecast</option>
+                <option value="official_area_mapped_forecast">Marine area mapped to port</option>
+                <option value="official_area_forecast">Marine-area forecast</option>
+                <option value="official_warning">Official warning / cyclone</option>
+              </select>
+            </label>
+            <label class="weather-field" for="coastal-weather-port-status">
+              <span>Reported port status</span>
+              <select id="coastal-weather-port-status">
+                <option value="all" selected>All statuses</option>
+                <option value="Closed">Closed</option>
+                <option value="Restricted">Restricted</option>
+                <option value="Open">Open (officially reported)</option>
+                <option value="Not reported">Not reported</option>
+              </select>
+            </label>
             <fieldset class="weather-parameters">
               <legend>Map signals</legend>
               <label><input type="checkbox" value="rain" checked /><span class="weather-param-dot rain"></span>Rainfall</label>
@@ -418,12 +463,13 @@
             <div class="weather-actions">
               <button type="button" id="coastal-weather-refresh" class="secondary-button">Refresh now</button>
               <a id="coastal-weather-download" class="secondary-button" href="/api/imd/coastal-weather/export.csv">Download CSV</a>
+              <a id="coastal-weather-port-report" class="secondary-button" href="/api/coastal-weather/port-report.xlsx?source=all">Port report Excel</a>
             </div>
             <div id="coastal-weather-status" class="weather-status">
               Layer is switched off.
             </div>
             <p class="source-note">
-              Official IMD, BMKG, METMalaysia, TMD, PAGASA, NEA/MSS, NCHMF and CMA/NMC forecasts, plus the global GDACS tropical-cyclone feed sourced from RSMCs/TCWCs such as JTWC and NOAA. India and China port rows map official coastal-area forecasts to trading-port locations and clearly identify the source marine area.
+              Official IMD, BMKG, METMalaysia, TMD, PAGASA, NEA/MSS, NCHMF, CMA/NMC, Australian BOM, NOAA/NWS, Environment Canada and JMA forecasts, plus the global GDACS tropical-cyclone feed sourced from RSMCs/TCWCs such as JTWC and NOAA. Port rows mapped from official coastal or marine grids clearly identify the source area. Port status is never inferred from weather: “Not reported” means no separate operating-status notice was available.
               Where an agency publishes sea-area rather than port forecasts, the card
               clearly identifies the official marine area used for that port.
               Forecasts are not observations or navigational advice.
@@ -437,7 +483,7 @@
             <span class="section-count" id="river-layer-count">Latest gauges</span>
           </summary>
           <div class="river-card">
-            <p class="workspace-intro">Official and reviewed source-backed levels on commercially navigable rivers, inland-waterway corridors and trade-critical reservoirs.</p>
+            <p class="workspace-intro">Official and reviewed source-backed levels limited to coastal-shipping, ocean-transit and regular commercial or bulk-trade waterways.</p>
             <div class="view-switch river-view-switch" aria-label="River and reservoir view">
               <button type="button" class="active" data-river-view="map">Map</button>
               <button type="button" data-river-view="table">Table</button>
@@ -728,16 +774,111 @@
         </div>
         <p id="npp-quality-note" class="npp-quality-note">Values display only after category and sector totals reconcile to the NPP installed-capacity headline.</p>
       </section>
+      <section id="gtt-surface" class="gtt-surface" hidden>
+        <aside class="gtt-app-sidebar" aria-label="GTT Trade Intelligence navigation">
+          <div class="gtt-nav-brand"><b>GTT</b><span>Trade<br>Intelligence</span></div>
+          <button type="button" id="gtt-back-main" class="gtt-back-main">← Back to main app</button>
+          <small>TRADE INTELLIGENCE</small>
+          <nav class="gtt-nav">
+            <button type="button" class="active" data-gtt-tab="overview"><i>⌂</i><span>Overview</span></button>
+            <button type="button" data-gtt-tab="explore"><i>⌕</i><span>Trade Explorer</span></button>
+            <button type="button" data-gtt-tab="compare"><i>◫</i><span>Market Explorer</span></button>
+            <button type="button" data-gtt-tab="compare"><i>⇄</i><span>Compare Lab</span></button>
+            <button type="button" data-gtt-tab="explore"><i>◇</i><span>Commodities</span></button>
+            <button type="button" data-gtt-tab="explore"><i>◎</i><span>Countries</span></button>
+            <button type="button" data-gtt-tab="explore"><i>◈</i><span>Vessels</span></button>
+            <button type="button" data-gtt-tab="insights"><i>▤</i><span>Reports</span></button>
+            <button type="button" data-gtt-tab="admin"><i>◉</i><span>Alerts</span></button>
+            <button type="button" data-gtt-tab="groups"><i>⊙</i><span>Groups</span></button>
+            <button type="button" data-gtt-tab="insights"><i>✦</i><span>AI Insights</span></button>
+          </nav>
+          <small>DATA MANAGEMENT</small>
+          <nav class="gtt-nav gtt-nav-secondary">
+            <button type="button" data-gtt-tab="uploads"><i>⇧</i><span>Uploads</span></button>
+            <button type="button" data-gtt-tab="admin"><i>⚙</i><span>Sources &amp; Admin</span></button>
+          </nav>
+          <div class="gtt-nav-footer"><span>GTT workspace</span><strong id="gtt-nav-footer-status">Source-backed analytics</strong></div>
+        </aside>
+        <header class="gtt-workspace-header">
+          <div><span>GTT / TRADE INTELLIGENCE</span><h1>Global Trade Dashboard</h1><p>Validated trade records, governed comparisons and evidence-aware research.</p></div>
+          <div class="gtt-header-status"><span>DATA STATUS</span><strong id="gtt-header-status">Awaiting validated GTT data</strong><small id="gtt-header-coverage">No reporting coverage</small></div>
+        </header>
+        <div class="gtt-filter-bar" aria-label="GTT workspace filters">
+          <label>Trade flow<select id="gtt-flow-filter"><option value="">Imports &amp; exports</option><option value="import">Imports</option><option value="export">Exports</option></select></label>
+          <label>Exporter country<select id="gtt-exporter-filter"><option value="">All exporters</option></select></label>
+          <label>Importer country<select id="gtt-importer-filter"><option value="">All importers</option></select></label>
+          <label>HS code<select id="gtt-hs-filter"><option value="">All HS codes</option></select></label>
+          <label>From year<select id="gtt-year-from"><option value="">Earliest available</option></select></label>
+          <label>To year<select id="gtt-year-to"><option value="">Latest available</option></select></label>
+          <label>Frequency<select id="gtt-frequency-filter"><option value="">All frequencies</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Annual</option></select></label>
+          <label>Metric<select id="gtt-metric-filter"><option value="quantity">Quantity</option><option value="value">Trade value</option><option value="unit_value">Unit value</option></select></label>
+          <label>Unit<select id="gtt-unit-filter"><option value="mt">Metric tonnes</option><option value="usd">USD</option></select></label>
+          <button type="button" id="gtt-reset-filters">Reset</button>
+        </div>
+        <main class="gtt-workspace">
+          <section data-gtt-panel="overview">
+            <div class="gtt-kpis">
+              <article><span>Total quantity</span><strong id="gtt-kpi-datasets">—</strong><small>Metric tonnes in selected source</small></article>
+              <article><span>Normalized rows</span><strong id="gtt-kpi-rows">—</strong><small>Validated records</small></article>
+              <article><span>Reporter countries</span><strong id="gtt-kpi-coverage">—</strong><small>Distinct reporting markets</small></article>
+              <article><span>Partner countries</span><strong id="gtt-kpi-latest">—</strong><small>Distinct bilateral partners</small></article>
+              <article><span>Data coverage</span><strong id="gtt-kpi-quality">—</strong><small>Observed source periods</small></article>
+            </div>
+            <div class="gtt-dashboard-grid gtt-country-dashboard">
+              <article class="gtt-panel gtt-country-profile"><header><div><span>COUNTRY PROFILE</span><h2 id="gtt-country-name">Selected country</h2><p id="gtt-country-subtitle">Choose an exporter or importer to analyse trade.</p></div></header><div id="gtt-country-profile-content" class="gtt-country-profile-content"></div></article>
+              <article class="gtt-panel gtt-trade-map-panel"><header><div><span>TRADE FLOWS</span><h2>Interactive world trade map</h2><p>Exporter and importer countries remain visible; active markets use solid colours. Hover or select a country for trade detail.</p></div><div class="gtt-panel-tools"><label>Map side<select id="gtt-map-side"><option value="exporter">Exporter</option><option value="importer">Importer</option></select></label><label>View<select id="gtt-map-view"><option value="flows">Trade flows</option><option value="countries">Country totals</option></select></label></div></header><div id="gtt-trade-map" class="gtt-trade-map" aria-label="Interactive exporter and importer trade map"></div><div id="gtt-trade-map-card" class="gtt-map-card" hidden></div></article>
+              <article class="gtt-panel gtt-trend-panel"><header><div><span>IMPORTS VS EXPORTS</span><h2>Monthly reported quantity</h2><p>Y axis: quantity (metric tonnes) · X axis: reporting month</p></div><div class="gtt-panel-tools"><b id="gtt-chart-source"></b><label>View<select data-gtt-chart-mode="trend"><option value="line">Line</option><option value="bar">Bars</option><option value="area">Area</option><option value="scatter">Scatter</option><option value="step">Step line</option><option value="lollipop">Lollipop</option><option value="dot">Dot plot</option><option value="histogram">Histogram</option><option value="pie">Pie</option><option value="heatmap">Heatmap</option><option value="table">Table</option></select></label></div></header><div id="gtt-overview-chart" class="gtt-chart"></div></article>
+              <article class="gtt-panel"><header><div><span>TOP DESTINATIONS</span><h2>Partner-country ranking</h2><p>Quantity in metric tonnes</p></div><label>View<select data-gtt-chart-mode="partners"><option value="bars">Bars</option><option value="line">Line</option><option value="area">Area</option><option value="scatter">Scatter</option><option value="step">Step line</option><option value="lollipop">Lollipop</option><option value="dot">Dot plot</option><option value="histogram">Histogram</option><option value="pie">Pie</option><option value="heatmap">Heatmap</option><option value="table">Table</option></select></label></header><div id="gtt-top-datasets" class="gtt-ranked-list"></div></article>
+              <article class="gtt-panel"><header><div><span>TOP REPORTERS</span><h2>Reporting-country ranking</h2><p>Quantity in metric tonnes</p></div><label>View<select data-gtt-chart-mode="reporters"><option value="bars">Bars</option><option value="line">Line</option><option value="area">Area</option><option value="scatter">Scatter</option><option value="step">Step line</option><option value="lollipop">Lollipop</option><option value="dot">Dot plot</option><option value="histogram">Histogram</option><option value="pie">Pie</option><option value="heatmap">Heatmap</option><option value="table">Table</option></select></label></header><div id="gtt-freshness-summary" class="gtt-ranked-list"></div></article>
+              <article class="gtt-panel"><header><div><span>COMMODITY MIX</span><h2>Top commodities</h2><p>Share of selected source quantity</p></div><label>View<select data-gtt-chart-mode="commodities"><option value="bars">Bars</option><option value="line">Line</option><option value="area">Area</option><option value="scatter">Scatter</option><option value="step">Step line</option><option value="lollipop">Lollipop</option><option value="dot">Dot plot</option><option value="histogram">Histogram</option><option value="pie">Pie</option><option value="heatmap">Heatmap</option><option value="table">Table</option></select></label></header><div id="gtt-top-commodities" class="gtt-ranked-list"></div></article>
+              <article class="gtt-panel"><header><div><span>PERIOD CHECK</span><h2>Latest movement</h2><p>Most recent observed periods in the selected range</p></div></header><div id="gtt-period-summary" class="gtt-period-summary"></div></article>
+            </div>
+          </section>
+          <section data-gtt-panel="explore" hidden>
+            <header class="gtt-section-heading"><div><span>GOVERNED EXPLORATION</span><h2>Country, commodity and bilateral datasets</h2><p>Open a source to choose explicit X/Y fields, inspect records and export the normalized data.</p></div></header>
+            <div class="gtt-view-switch"><button type="button" class="active">Country</button><button type="button">Commodity / HS code</button><button type="button">Bilateral flow</button></div>
+            <div id="gtt-explore-catalog" class="gtt-catalog"></div>
+          </section>
+          <section data-gtt-panel="compare" hidden>
+            <header class="gtt-section-heading"><div><span>COMPARE LAB</span><h2>Compare up to four validated series</h2><p>Coverage and schema are checked before a relationship can be proposed.</p></div></header>
+            <div class="gtt-compare-layout">
+              <div class="gtt-compare-builder"><label>Series to compare<select id="gtt-compare-datasets" multiple size="8"></select></label><button type="button" id="gtt-run-compare">Compare selected series</button><small>Use Ctrl or Cmd to select two to four datasets.</small></div>
+              <div id="gtt-compare-result" class="gtt-compare-result"><div class="gtt-empty"><strong>No comparison selected</strong><span>Select validated GTT datasets to compare coverage, row counts, missingness and shared fields.</span></div></div>
+            </div>
+          </section>
+          <section data-gtt-panel="groups" hidden>
+            <header class="gtt-section-heading"><div><span>REUSABLE DEFINITIONS</span><h2>Country and HS-code groups</h2><p>Private and shared, versioned groups are created only from loaded master dimensions.</p></div></header>
+            <div id="gtt-groups-content" class="gtt-gated-card"></div>
+          </section>
+          <section data-gtt-panel="insights" hidden>
+            <header class="gtt-section-heading"><div><span>AI RESEARCH &amp; PUBLISHING</span><h2>Evidence-first analytical insights</h2><p>User-triggered analysis is limited to validated aggregates and must retain citations and reviewer status.</p></div></header>
+            <div id="gtt-insights-content" class="gtt-gated-card"></div>
+          </section>
+          <section data-gtt-panel="uploads" hidden>
+            <header class="gtt-section-heading"><div><span>GOVERNED INGESTION</span><h2>GTT uploads and connector</h2><p>Uploaded → Profiling → Mapping → Validating → Ready to publish.</p></div><button type="button" class="gtt-primary-action" id="gtt-upload-file">Upload GTT file</button></header>
+            <div class="gtt-upload-grid">
+              <article><span>FILE INGESTION</span><h3>GTT CSV, Excel, JSON or PDF</h3><p>Files are normalized into the shared master store with schema, missingness, duplicate and date coverage checks.</p><button type="button" id="gtt-upload-file-secondary">Choose file</button></article>
+              <article><span>API CONNECTOR</span><h3>Connect licensed GTT access</h3><p>Credentials are stored server-side; mapping and scheduled ingestion remain disabled until configured.</p><button type="button" id="gtt-connect-api">Configure connector</button></article>
+              <article><span>PUBLICATION GUARDRAIL</span><h3>No silent publication</h3><p>Profiling does not imply approval. Source, batch and data quality remain visible throughout the workflow.</p></article>
+            </div>
+            <div id="gtt-upload-catalog" class="gtt-catalog"></div>
+          </section>
+          <section data-gtt-panel="admin" hidden>
+            <header class="gtt-section-heading"><div><span>SOURCES &amp; ADMIN</span><h2>Connector, quality and lineage status</h2><p>This view reports implemented controls only; enterprise identity and role provisioning are not simulated.</p></div></header>
+            <div id="gtt-admin-grid" class="gtt-admin-grid"></div>
+          </section>
+        </main>
+      </section>
       <section id="datahub-surface" class="datahub-surface" hidden>
         <header class="datahub-header">
-          <div><span>HRP DATA ORCHESTRATION</span><h1>Market data hub</h1><p>Source-aware ingestion, comparison and approved relationships.</p></div>
+          <div><span>HRP DATA ORCHESTRATION</span><h1>Market data hub</h1><p>Source-aware ingestion, comparison and reviewed join proposals.</p></div>
           <div class="datahub-master-state"><span>MASTER STORE</span><strong id="datahub-master-file">provider_master.sqlite3</strong><small>Files, rows, lineage and approvals</small></div>
         </header>
         <div class="datahub-kpis">
           <article><span>Datasets</span><strong id="datahub-kpi-datasets">0</strong><small>Across all providers</small></article>
           <article><span>Normalized rows</span><strong id="datahub-kpi-rows">0</strong><small>Available for preview</small></article>
           <article><span>Updates due</span><strong id="datahub-kpi-overdue">0</strong><small>Freshness reminder</small></article>
-          <article><span>Approved relations</span><strong id="datahub-kpi-relations">0</strong><small>Reusable analytical links</small></article>
+          <article><span>Approved join proposals</span><strong id="datahub-kpi-relations">0</strong><small>Reviewed plans; not executed joins</small></article>
         </div>
         <div id="datahub-provider-grid" class="datahub-provider-grid" aria-label="Data providers"></div>
         <nav class="datahub-nav" aria-label="Data hub tools">
@@ -751,7 +892,7 @@
             <div id="datahub-catalog" class="datahub-catalog"></div>
           </section>
           <section data-datahub-panel="relationships" hidden>
-            <header><div><span>GOVERNED ORCHESTRATION</span><h2>Compare sources and propose relationships</h2></div><small>Nothing is joined until approved.</small></header>
+            <header><div><span>GOVERNED ORCHESTRATION</span><h2>Compare sources and propose joins</h2></div><small>Approval records a plan; it does not execute a join.</small></header>
             <div class="datahub-relation-layout">
               <div>
                 <label for="datahub-relationship-datasets">Datasets to compare</label>
@@ -771,7 +912,7 @@
                 <div class="datahub-viz-toolbar">
                   <label>Dataset<select id="datahub-viz-dataset"><option value="">Choose dataset</option></select></label>
                   <div class="datahub-viz-field-row">
-                    <label>Chart<select id="datahub-viz-type"><option value="line">Trend line</option><option value="bar">Category bars</option><option value="scatter">Relationship scatter</option></select></label>
+                    <label>Chart<select id="datahub-viz-type"><option value="line">Line</option><option value="bar">Bars</option><option value="area">Area</option><option value="scatter">Scatter</option><option value="step">Step line</option><option value="lollipop">Lollipop</option><option value="dot">Dot plot</option><option value="histogram">Histogram</option><option value="pie">Pie</option><option value="heatmap">Heatmap</option><option value="table">Table</option></select></label>
                     <label>X axis<select id="datahub-viz-x"><option value="">Select field</option></select></label>
                     <label>Y axis<select id="datahub-viz-y"><option value="">Select field</option></select></label>
                   </div>
@@ -822,7 +963,7 @@
             <label>API endpoint (optional)<input id="datahub-api-endpoint" type="url" placeholder="https://api.provider.com/v1" /></label>
             <label>API key<input id="datahub-api-key" type="password" autocomplete="new-password" placeholder="Paste API key" /></label>
             <button type="button" class="primary" id="datahub-submit-api">Save connection</button>
-            <p id="datahub-api-message">The browser never receives the saved key back. Provider-specific field mapping is reviewed before scheduled ingestion.</p>
+            <p id="datahub-api-message">Credentials are held only by the running server. Saving them does not start ingestion; a provider-specific connector must still be configured.</p>
           </form>
         </dialog>
       </section>
@@ -858,6 +999,6 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/js/app.js?v=20260825-river-levels-04"></script>
+  <script src="/static/js/app.js?v=20260901-imd-retry-1"></script>
 </body>
 </html>

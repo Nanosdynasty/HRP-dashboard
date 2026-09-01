@@ -33,6 +33,10 @@ IMD_COASTAL_BULLETINS = [
     ],
 ]
 REFRESH_SECONDS = 5 * 60 * 60
+# A source or network issue should not leave the dashboard on an old bulletin for
+# the entire regular refresh window.  Failed collection attempts are retried on a
+# short, bounded interval while successful collection remains every five hours.
+FAILED_REFRESH_RETRY_SECONDS = 5 * 60
 KNOT_TO_KMPH = 1.852
 
 
@@ -730,6 +734,7 @@ class ImdCoastalWeatherManager:
 
     async def _run(self) -> None:
         while not self.stopping:
+            wait_seconds = self.refresh_seconds
             try:
                 await self.refresh()
             except asyncio.CancelledError:
@@ -737,7 +742,8 @@ class ImdCoastalWeatherManager:
             except Exception as exc:
                 self.last_error = str(exc)
                 log.warning("IMD coastal refresh failed: %s", exc)
-            await asyncio.sleep(self.refresh_seconds)
+                wait_seconds = min(self.refresh_seconds, FAILED_REFRESH_RETRY_SECONDS)
+            await asyncio.sleep(wait_seconds)
 
     def start(self) -> None:
         if not self.task or self.task.done():

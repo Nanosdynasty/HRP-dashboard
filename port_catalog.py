@@ -13,6 +13,11 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from maritime_extras import DEPTH_CODE, HARBOR_SIZE, HARBOR_TYPE, MAX_VESSEL
 
+try:
+    import pycountry
+except ImportError:  # pragma: no cover - deployment requirements include it
+    pycountry = None
+
 
 WPI_SOURCE_URL = "https://msi.nga.mil/Publications/WPI"
 GEM_COAL_TERMINALS_URL = (
@@ -29,6 +34,35 @@ OFFICIAL_TERMINAL_POINTS: Dict[str, Dict[str, Any]] = {
         },
     }
 }
+
+COUNTRY_NAME_OVERRIDES = {
+    "bolivia": "BO", "brunei": "BN", "china": "CN", "congo": "CG",
+    "democratic republic of the congo": "CD", "iran": "IR",
+    "laos": "LA", "north korea": "KP", "russia": "RU",
+    "south korea": "KR", "syria": "SY", "taiwan": "TW",
+    "tanzania": "TZ", "turkey": "TR", "venezuela": "VE",
+    "vietnam": "VN",
+}
+
+
+def _country_identity(value: Any) -> tuple[Optional[str], Optional[str]]:
+    """Return one ISO code and one English display name for a country value."""
+    raw = str(_clean(value) or "").strip()
+    if not raw:
+        return None, None
+    code = raw.upper() if len(raw) == 2 and raw.isalpha() else None
+    if not code:
+        code = COUNTRY_NAME_OVERRIDES.get(raw.casefold())
+    country = None
+    if pycountry is not None:
+        try:
+            country = pycountry.countries.get(alpha_2=code) if code else pycountry.countries.lookup(raw)
+        except LookupError:
+            country = None
+    if country is not None:
+        code = country.alpha_2
+        return code, str(country.name)
+    return code or raw, raw
 
 
 FIELD_ALIASES: Dict[str, List[str]] = {
@@ -305,6 +339,7 @@ class PortCatalog:
             if official
             else _number(terminal.get("lon"))
         )
+        country_code, country_name = _country_identity(terminal.get("country"))
         terminal_record = {
             "id": "gem-coal-" + str(
                 _clean(terminal.get("asset_id")) or _slug(name)
@@ -330,7 +365,8 @@ class PortCatalog:
             ),
             "search_aliases": PortCatalog._terminal_search_aliases(terminal),
             "unlocode": None,
-            "country": _clean(terminal.get("country")),
+            "country": country_code,
+            "country_name": country_name,
             "lat": lat,
             "lon": lon,
             "harbor_size": "Unknown",
@@ -524,13 +560,15 @@ class PortCatalog:
             cargo = _decode_depth(raw.get("cargo_depth"))
             oil = _decode_depth(raw.get("oil_depth"))
             lng = _decode_depth(raw.get("lng_depth"))
+            country_code, country_name = _country_identity(raw.get("country"))
             port: Dict[str, Any] = {
                 "id": port_id,
                 "name": str(name),
                 "alternate_name": _clean(raw.get("alternate_name")),
                 "search_aliases": [],
                 "unlocode": _clean(raw.get("unlocode")),
-                "country": _clean(raw.get("country")),
+                "country": country_code,
+                "country_name": country_name,
                 "lat": lat,
                 "lon": lon,
                 "harbor_size": _decode_lookup(raw.get("harbor_size"), HARBOR_SIZE),
@@ -674,13 +712,17 @@ class PortCatalog:
         country_counts = Counter(
             str(item["country"]) for item in self.ports if item.get("country")
         )
+        country_labels = {
+            str(item["country"]): str(item.get("country_name") or item["country"])
+            for item in self.ports if item.get("country")
+        }
         self.facets = {
             "categories": [
                 {"id": key, "label": key.replace("_", " ").title(), "count": value}
                 for key, value in sorted(category_counts.items())
             ],
             "countries": [
-                {"id": key, "label": key, "count": value}
+                {"id": key, "label": country_labels.get(key, key), "count": value}
                 for key, value in sorted(country_counts.items())
             ],
             "harbor_sizes": [
@@ -733,6 +775,7 @@ class PortCatalog:
                             "alternate_name",
                             "unlocode",
                             "country",
+                            "country_name",
                         )
                     ]
                     + [
@@ -744,7 +787,11 @@ class PortCatalog:
                     continue
             if category_set and not category_set.intersection(port["categories"]):
                 continue
-            if country_set and str(port.get("country") or "").lower() not in country_set:
+            port_country_values = {
+                str(port.get("country") or "").lower(),
+                str(port.get("country_name") or "").lower(),
+            }
+            if country_set and not country_set.intersection(port_country_values):
                 continue
             if harbor_set and port["harbor_size"].lower() not in harbor_set:
                 continue
@@ -776,6 +823,7 @@ class PortCatalog:
                 "search_aliases",
                 "unlocode",
                 "country",
+                "country_name",
                 "lat",
                 "lon",
                 "categories",

@@ -35,6 +35,8 @@ class GlobalCycloneNormalizationTests(unittest.TestCase):
         }
         ports = [
             {"id": "near", "name": "Near Port", "country": "India", "lat": 16.1, "lon": 82.1},
+            {"id": "gem-terminal-near", "name": "Near Port Coal Terminal", "country": "India", "lat": 16.1, "lon": 82.1, "specialist_terminal": True},
+            {"id": "another-terminal", "name": "Nearby Trans-shipment Terminal", "country": "India", "lat": 16.2, "lon": 82.2},
             {"id": "far", "name": "Far Port", "country": "India", "lat": 30.0, "lon": 60.0},
         ]
         rows = build_cyclone_records(events, geometry, ports, datetime(2026, 8, 11, 8, tzinfo=timezone.utc))

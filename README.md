@@ -100,7 +100,10 @@ Copy `.env.example` values into your deployment environment. Important variables
 - `AISSTREAM_API_KEY`: optional live AIS vessel tracking. Never commit this value.
 - `ALLOWED_ORIGINS`: comma-separated trusted browser origins.
 - `XAI_API_KEY`: optional Grok chat integration.
-- `LOCAL_LLM_URL`: optional local OpenAI-compatible model endpoint.
+- `APP_ADMIN_TOKEN`: protects uploads, manual refreshes and Data Hub approvals. The UI asks for it only when an administrator action is attempted.
+- `HRP_STORAGE_DIR`: runtime data directory. Point this to a persistent Render disk (for example `/var/data/hrp`) in production.
+- `AIS_RAW_RETENTION_DAYS`: raw AIS trail retention, default `90`; the latest position per vessel is retained separately.
+- `AIS_MAX_OBSERVATIONS`: hard cap for raw AIS observations, default `2000000`.
 
 If an AIS credential was previously committed, revoke it at the provider and
 replace it with a newly issued environment-only key.

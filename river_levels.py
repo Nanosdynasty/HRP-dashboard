@@ -41,8 +41,6 @@ ACP_GATUN_PDF = "https://evtms-rpts.pancanal.com/eng/h2o/GatunWaterIndicators.pd
 ACP_GATUN_PAGE = "https://evtms-rpts.pancanal.com/eng/h2o/index.html"
 INDONESIA_SIHKA_URL = "https://sihka.dev-tunnels.id/api/v1s/infrastructure/asset?id=15"
 INDONESIA_SIHKA_PAGE = "https://sihka.sda.pu.go.id/"
-BANGLADESH_BULLETIN_URL = "https://api.ffwc.gov.bd/assets/uploads/fbullev.pdf"
-BANGLADESH_FFWC_PAGE = "https://ffwc.gov.bd/"
 THREE_GORGES_DATA_PATH = Path(__file__).parent / "data" / "three_gorges_reservoir_watch.json"
 THREE_GORGES_SOURCE_PAGE = "https://journal.probeinternational.org/reservoir-level-3/"
 
@@ -50,16 +48,6 @@ INDONESIA_STATIONS = {
     "AWLR SRIJABO": ("Musi River", "Musi Basin"),
     "MARABAHAN": ("Barito River", "Barito Basin"),
     "POS DUGA AIR SUKALANTING": ("Kapuas River", "Kapuas Basin"),
-}
-
-BANGLADESH_STATIONS = {
-    "BAHADURABAD": {"river": "Jamuna", "lat": 25.18, "lon": 89.69},
-    "ARICHA": {"river": "Jamuna", "lat": 23.84, "lon": 89.78},
-    "HARDINGE BRIDGE": {"river": "Ganges", "lat": 24.07, "lon": 89.03},
-    "GOALUNDO": {"river": "Padma", "lat": 23.73, "lon": 89.77},
-    "NARAYANGANJ": {"river": "Lakhya", "lat": 23.62, "lon": 90.50},
-    "MONGLA": {"river": "Pashur", "lat": 22.47, "lon": 89.60},
-    "CHANDPUR": {"river": "Meghna", "lat": 23.23, "lon": 90.67},
 }
 
 PEGEL_STATIONS = {
@@ -97,6 +85,59 @@ AMAZON_STATIONS = (
         "latitude": -8.760, "longitude": -63.900, "country": "Brazil",
     },
 )
+
+# The workspace is deliberately narrower than a general hydrology map.  A row
+# is exposed only when its waterway directly supports coastal shipping, ocean
+# transit, or regular commercial/bulk inland navigation.  This allowlist also
+# prevents a broad upstream feed from silently adding recreational or purely
+# flood-monitoring stations later.
+COMMERCIAL_WATERWAY_ROLES = {
+    "mississippi river": "Lower Mississippi grain, coal and dry-bulk export corridor",
+    "ohio river": "Mississippi-system coal, steel and industrial-bulk corridor",
+    "missouri river": "Mississippi-system commercial cargo corridor",
+    "amazon river": "Amazon basin coastal and agricultural/mineral bulk corridor",
+    "rio negro": "Amazon basin commercial navigation and Manaus port corridor",
+    "solimões river": "Upper Amazon commercial navigation corridor",
+    "madeira river": "Brazilian grain-barge and Amazon export corridor",
+    "tapajós river": "Brazilian grain-barge and Amazon export corridor",
+    "rhine": "European inland dry-bulk and North Sea port-gateway corridor",
+    "danube": "European inland bulk and Black Sea trade corridor",
+    "elbe": "Central European inland cargo and North Sea port corridor",
+    "moselle": "Rhine-system steel, coal and industrial-bulk corridor",
+    "mekong": "Southeast Asian commercial river-transport corridor",
+    "musi river": "South Sumatran coal-barge and port corridor",
+    "barito river": "Indonesian coal-barge and coastal-transshipment corridor",
+    "kapuas river": "Indonesian inland and coastal cargo corridor",
+    "st. lawrence river": "Great Lakes–Atlantic ocean-shipping corridor",
+    "lake ontario and st. lawrence river": "Great Lakes–Atlantic ocean-shipping corridor",
+    "yangtze river": "Major Chinese inland, coastal and dry-bulk shipping corridor",
+    "yangtze river / three gorges reservoir": "Yangtze shipping-system trade-critical reservoir",
+    "paraná river": "South American grain and dry-bulk export corridor",
+    "paraguay river": "Paraguay–Paraná grain, ore and bulk-barge corridor",
+    "gatún lake / panama canal": "Ocean-shipping canal reservoir",
+}
+
+EXCLUDED_RIVER_COUNTRIES = {"Bangladesh", "India"}
+
+
+def commercial_trade_role(row: Dict[str, Any]) -> Optional[str]:
+    """Return the reviewed commercial role, or None when the row is out of scope."""
+    if str(row.get("country") or "").strip() in EXCLUDED_RIVER_COUNTRIES:
+        return None
+    waterbody = " ".join(str(row.get("waterbody") or "").casefold().split())
+    return COMMERCIAL_WATERWAY_ROLES.get(waterbody)
+
+
+def filter_commercial_waterways(rows: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    selected: List[Dict[str, Any]] = []
+    for source_row in rows:
+        role = commercial_trade_role(source_row)
+        if not role:
+            continue
+        row = dict(source_row)
+        row["trade_relevance"] = role
+        selected.append(row)
+    return selected
 
 SOURCE_CATALOG: List[Dict[str, Any]] = [
     {
@@ -144,26 +185,6 @@ SOURCE_CATALOG: List[Dict[str, Any]] = [
         "metrics": "Gauge water level and official alert thresholds", "url": INDONESIA_SIHKA_PAGE,
     },
     {
-        "id": "bangladesh-ffwc", "region": "Bangladesh", "waterways": "Jamuna, Ganges, Padma, Meghna and port rivers",
-        "authority": "Bangladesh Water Development Board FFWC", "access": "Official public river-situation bulletin",
-        "status": "connected", "frequency": "Twice daily in flood season",
-        "metrics": "Water level, change, danger level and record high-water level", "url": BANGLADESH_FFWC_PAGE,
-    },
-    {
-        "id": "india-cwc", "region": "India", "waterways": "Ganga, Brahmaputra and major Indian rivers/reservoirs",
-        "authority": "Central Water Commission", "access": "Public flood-forecast portals and official bulletins",
-        "status": "portal_only", "frequency": "Intraday / bulletin",
-        "metrics": "Observed and forecast river level, warning/danger thresholds and reservoir inflow",
-        "url": "https://ffs.india-water.gov.in/",
-    },
-    {
-        "id": "india-iwai-lad", "region": "India", "waterways": "National Waterways, including NW-1 and NW-2",
-        "authority": "Inland Waterways Authority of India", "access": "Public LAD reports and waterway pages",
-        "status": "connector_ready", "frequency": "Periodic navigation survey",
-        "metrics": "Least Available Depth by navigable reach, fairway dimensions and cargo context",
-        "url": "https://iwai.nic.in/",
-    },
-    {
         "id": "eccc-wateroffice", "region": "Canada", "waterways": "St. Lawrence and Canadian waterways",
         "authority": "Environment and Climate Change Canada Water Survey", "access": "Public hydrometric downloads/services",
         "status": "connector_ready", "frequency": "Real time / provisional",
@@ -201,13 +222,6 @@ SOURCE_CATALOG: List[Dict[str, Any]] = [
         "authority": "Panama Canal Authority", "access": "Official indicator PDF and CSV downloads",
         "status": "connected", "frequency": "Daily",
         "metrics": "Official lake level, permitted transit draft and fresh-water surcharge", "url": ACP_GATUN_PAGE,
-    },
-    {
-        "id": "usbr-rise", "region": "United States", "waterways": "Major federal reservoirs",
-        "authority": "US Bureau of Reclamation RISE", "access": "Open API",
-        "status": "connector_ready", "frequency": "Varies by reservoir",
-        "metrics": "Reservoir elevation, storage, inflow and release",
-        "url": "https://data.usbr.gov/visualizations/reservoir-conditions/",
     },
 ]
 
@@ -605,55 +619,6 @@ def _indonesia_records(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
-def _bangladesh_records(pdf_bytes: bytes) -> List[Dict[str, Any]]:
-    text = "\n".join((page.extract_text() or "") for page in PdfReader(io.BytesIO(pdf_bytes)).pages)
-    date_match = re.search(r"RIVER SITUATION AS ON\s+(\d{2}-\d{2}-\d{4})\s+AT\s+(\d{1,2}:\d{2})", text, re.I)
-    observed_at = None
-    if date_match:
-        observed_at = datetime.strptime(" ".join(date_match.groups()), "%d-%m-%Y %H:%M").replace(tzinfo=timezone(timedelta(hours=6))).isoformat()
-    rows: List[Dict[str, Any]] = []
-    for station, config in BANGLADESH_STATIONS.items():
-        pattern = re.compile(
-            rf"^\s*\d+\s+(.+?)\s+{re.escape(station)}\s+(-|[\d.]+)\s+(-|[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(?:\+\s*)?(-?\d+)",
-            re.I | re.M,
-        )
-        match = pattern.search(text)
-        if not match:
-            continue
-        record_high = _safe_number(match.group(2))
-        danger = _safe_number(match.group(3))
-        morning = _safe_number(match.group(4))
-        level = _safe_number(match.group(5))
-        change = round(int(match.group(6)) / 100.0, 2)
-        trend, _ = _trend(level, morning)
-        high = level is not None and danger is not None and level >= danger
-        row = {
-            "id": f"ffwc-{station.lower().replace(' ', '-')}", "station": station.title(),
-            "waterbody": config["river"], "basin": f"{config['river']} Basin", "country": "Bangladesh",
-            "waterbody_type": "river", "latitude": config["lat"], "longitude": config["lon"],
-            "observed_at": observed_at, "level": level, "level_unit": "m MSL",
-            "status": "high" if high else "normal",
-            "status_label": "At or above danger level" if high else "Below danger level",
-            "trend": trend, "trend_value": change, "trend_unit": "m / 6 h",
-            "navigation_note": "FFWC hydrological level relative to mean sea level; it is not channel depth.",
-            "source_name": "Bangladesh Water Development Board FFWC",
-            "source_url": BANGLADESH_FFWC_PAGE, "source_method": "Official bulletin parsed in memory; normalized JSON retained",
-            "freshness": _freshness(observed_at), "gauge_datum": "Metres above mean sea level",
-            "quality_note": "Danger level and record high are safety references, not normal water levels.",
-            "extra_metrics": {
-                "Danger level": f"{danger} m MSL" if danger is not None else None,
-                "Recorded high water level": f"{record_high} m MSL" if record_high is not None else None,
-            },
-            "history": [
-                {"observed_at": observed_at, "level": morning, "level_unit": "m MSL", "period": "09:00"},
-                {"observed_at": observed_at, "level": level, "level_unit": "m MSL", "period": "15:00"},
-            ],
-        }
-        row.update(_comparison_fields(level, [], "m MSL", "", change_24h=None, change_7d=None))
-        rows.append(row)
-    return rows
-
-
 def _three_gorges_record(path: Path = THREE_GORGES_DATA_PATH) -> Dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     observations = [
@@ -835,6 +800,12 @@ class RiverLevelManager:
         try:
             data = json.loads(self.cache_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
+                data["rows"] = filter_commercial_waterways(data.get("rows") or [])
+                data["sources"] = SOURCE_CATALOG
+                data["source_count"] = len(SOURCE_CATALOG)
+                data["connected_source_count"] = sum(
+                    item["status"] == "connected" for item in SOURCE_CATALOG
+                )
                 self.payload = data
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             self.payload = {}
@@ -882,11 +853,6 @@ class RiverLevelManager:
         response.raise_for_status()
         return _indonesia_records(response.json())
 
-    async def _fetch_bangladesh(self, client: httpx.AsyncClient) -> List[Dict[str, Any]]:
-        response = await client.get(BANGLADESH_BULLETIN_URL, timeout=60)
-        response.raise_for_status()
-        return await asyncio.to_thread(_bangladesh_records, response.content)
-
     async def refresh(self, force: bool = False) -> Dict[str, Any]:
         async with self._lock:
             if not force and self.payload.get("fetched_at"):
@@ -902,11 +868,11 @@ class RiverLevelManager:
             async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=40) as client:
                 results = await asyncio.gather(
                     self._fetch_noaa(client), self._fetch_pegel(client), self._fetch_amazon(client), self._fetch_gatun(client),
-                    self._fetch_indonesia(client), self._fetch_bangladesh(client),
+                    self._fetch_indonesia(client),
                     asyncio.to_thread(lambda: [_three_gorges_record(), _three_gorges_yichang_record()]),
                     return_exceptions=True,
                 )
-            names = ("NOAA", "PEGELONLINE", "ANA Amazon", "Panama Canal Authority", "Indonesia SIHKA", "Bangladesh FFWC", "Three Gorges Reservoir Watch")
+            names = ("NOAA", "PEGELONLINE", "ANA Amazon", "Panama Canal Authority", "Indonesia SIHKA", "Three Gorges Reservoir Watch")
             for name, result in zip(names, results):
                 if isinstance(result, Exception):
                     errors.append(f"{name}: {result}")
@@ -915,6 +881,7 @@ class RiverLevelManager:
             if not rows and self.payload.get("rows"):
                 self.last_error = "; ".join(errors) or "No official source returned data"
                 return self.payload
+            rows = filter_commercial_waterways(rows)
             rows.sort(key=lambda row: (row.get("waterbody") or "", row.get("station") or ""))
             self.payload = {
                 "fetched_at": _iso_now(), "rows": rows, "sources": SOURCE_CATALOG,
@@ -949,7 +916,7 @@ class RiverLevelManager:
 
 def export_rows_csv(rows: Iterable[Dict[str, Any]]) -> str:
     fields = [
-        "id", "station", "waterbody", "basin", "country", "waterbody_type",
+        "id", "station", "waterbody", "basin", "country", "waterbody_type", "trade_relevance",
         "latitude", "longitude", "river_km", "observed_at", "level", "level_unit",
         "normal_level", "normal_low", "normal_high", "normal_unit", "normal_basis",
         "difference_from_normal", "percent_from_normal", "comparison_status",
@@ -976,7 +943,7 @@ def export_river_levels_xlsx(payload: Dict[str, Any], rows: Optional[List[Dict[s
     current = workbook.active
     current.title = "Current levels"
     fields = [
-        "station", "waterbody", "basin", "country", "waterbody_type", "observed_at",
+        "station", "waterbody", "basin", "country", "waterbody_type", "trade_relevance", "observed_at",
         "level", "level_unit", "normal_level", "normal_low", "normal_high", "normal_unit",
         "difference_from_normal", "percent_from_normal", "comparison_status", "normal_basis",
         "change_24h", "change_7d", "change_unit", "historical_percentile",
@@ -1014,18 +981,17 @@ def export_river_levels_xlsx(payload: Dict[str, Any], rows: Optional[List[Dict[s
             row.get("quality_note"),
         ])
 
-    reference_sheet = workbook.create_sheet("Navigation references")
-    reference_sheet.append(["Country", "Waterway", "Authority", "Measure", "Important distinction", "Official URL"])
-    reference_sheet.append([
-        "India", "National Waterway 1 (Ganga–Bhagirathi–Hooghly)", "Inland Waterways Authority of India",
-        "Least Available Depth by surveyed reach", "LAD is a navigation measure and must not be inferred from CWC gauge height",
-        "https://iwai.nic.in/waterways/national-waterways/national-waterways-1%3Fpage%3D1",
-    ])
-    reference_sheet.append([
-        "India", "National Waterway 2 (Brahmaputra)", "Inland Waterways Authority of India",
-        "Least Available Depth by surveyed reach", "LAD is a navigation measure and must not be inferred from CWC gauge height",
-        "https://iwai.nic.in/departments/north-east-region-cell/national-waterways-2",
-    ])
+    reference_sheet = workbook.create_sheet("Commercial scope")
+    reference_sheet.append(["Country", "Waterway", "Commercial trade role", "Official source"])
+    seen_scope = set()
+    for row in selected:
+        scope_key = (row.get("country"), row.get("waterbody"), row.get("trade_relevance"))
+        if scope_key in seen_scope:
+            continue
+        seen_scope.add(scope_key)
+        reference_sheet.append([
+            row.get("country"), row.get("waterbody"), row.get("trade_relevance"), row.get("source_name"),
+        ])
 
     source_sheet = workbook.create_sheet("Sources")
     source_fields = ["region", "waterways", "authority", "status", "frequency", "metrics", "access", "url"]
@@ -1045,6 +1011,7 @@ def export_river_levels_xlsx(payload: Dict[str, Any], rows: Optional[List[Dict[s
         "Change 24h / 7d": "Current level minus the nearest official observation at the stated lag.",
         "Comparison status": "Below normal, normal, above normal, or unavailable from the official feed.",
         "Gauge datum": "Vertical reference used by the gauge. It is not channel depth.",
+        "Trade relevance": "Reviewed reason the waterway is included: coastal shipping, ocean transit, or regular commercial/bulk navigation.",
     }
     for key, value in definitions.items():
         dictionary.append([key, value])

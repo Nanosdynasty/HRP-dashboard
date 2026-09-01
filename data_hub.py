@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import uuid
@@ -232,19 +233,22 @@ class DataHubStore:
             issues.append(f"{duplicate_rows:,} exact duplicate rows need review.")
         if null_rate > 0.35:
             issues.append(f"Average field missingness is {null_rate:.0%}.")
-        latest = data_end or _utcnow().isoformat()
-        latest_dt = datetime.fromisoformat(latest.replace("Z", "+00:00"))
+        latest_dt = (
+            datetime.fromisoformat(data_end.replace("Z", "+00:00"))
+            if data_end else None
+        )
         increments = {
             "daily": timedelta(days=2), "weekly": timedelta(days=9),
             "monthly": timedelta(days=40), "quarterly": timedelta(days=110),
             "yearly": timedelta(days=400), "ad_hoc": timedelta(days=3650),
         }
-        next_due = latest_dt + increments[frequency]
+        next_due = latest_dt + increments[frequency] if latest_dt else None
         quality_status = "review_needed" if issues else "profiled"
         return {
             "frame": frame, "columns": list(frame.columns), "numeric_columns": numeric,
             "date_columns": date_columns, "data_start": data_start, "data_end": data_end,
-            "latest_period": data_end, "next_due_at": next_due.isoformat(),
+            "latest_period": data_end,
+            "next_due_at": next_due.isoformat() if next_due else None,
             "duplicate_rows": duplicate_rows, "null_rate": null_rate,
             "quality_status": quality_status, "quality_issues": issues,
         }
@@ -373,6 +377,151 @@ class DataHubStore:
             ).fetchall()
         return [json.loads(row["row_json"]) for row in rows]
 
+    def analytics(self, dataset_id: str, reporter: str | None = None, partner: str | None = None,
+                  hs_code: str | None = None, year_from: int | None = None,
+                  year_to: int | None = None) -> Dict[str, Any]:
+        """Return compact, source-backed aggregates for canonical trade datasets."""
+        dataset = self.dataset(dataset_id)
+        frame = pd.DataFrame(self.all_rows(dataset_id))
+        if frame.empty:
+            raise ValueError("Dataset has no analytical rows")
+
+        def first_field(*names: str) -> str | None:
+            canonical = {_canonical_field(column): column for column in frame.columns}
+            for name in names:
+                if name in frame.columns:
+                    return name
+                if _canonical_field(name) in canonical:
+                    return canonical[_canonical_field(name)]
+            return None
+
+        period_field = first_field("reporting_period", "period", "date", "month")
+        quantity_field = first_field("quantity_mt", "volume_mt", "net_weight_mt", "metric_tonnes")
+        reporter_field = first_field("reporter_country", "reporter", "origin", "country")
+        partner_field = first_field("partner_country", "partner", "destination")
+        commodity_field = first_field("commodity", "commodity_name", "hs_description")
+        currency_field = first_field("currency")
+        value_field = first_field("trade_value_original", "value_usd", "trade_value", "value")
+        reporter_iso_field = first_field("reporter_iso2", "reporter_iso")
+        partner_iso_field = first_field("partner_iso2", "partner_iso")
+        hs_field = first_field("hs_code", "hs", "commodity_code")
+
+        # Apply explicit explorer filters before calculating any KPI or chart aggregate.
+        if reporter and reporter_field:
+            frame = frame[frame[reporter_field].astype(str).str.casefold() == str(reporter).casefold()]
+        if partner and partner_field:
+            frame = frame[frame[partner_field].astype(str).str.casefold() == str(partner).casefold()]
+        if hs_code and hs_field:
+            frame = frame[frame[hs_field].astype(str).str.replace(".0", "", regex=False).str.casefold() == str(hs_code).casefold()]
+        if year_from is not None and period_field:
+            parsed = pd.to_datetime(frame[period_field], errors="coerce")
+            frame = frame[parsed.dt.year >= int(year_from)]
+        if year_to is not None and period_field:
+            parsed = pd.to_datetime(frame[period_field], errors="coerce")
+            frame = frame[parsed.dt.year <= int(year_to)]
+        if frame.empty:
+            raise ValueError("No records match the selected country, HS code and period filters")
+
+        if period_field:
+            frame["_period"] = pd.to_datetime(frame[period_field], errors="coerce")
+        if quantity_field:
+            frame["_quantity"] = pd.to_numeric(frame[quantity_field], errors="coerce")
+        if value_field:
+            frame["_value"] = pd.to_numeric(frame[value_field], errors="coerce")
+
+        def ranked(field: str | None, measure: str, limit: int = 8) -> List[Dict[str, Any]]:
+            if not field or measure not in frame:
+                return []
+            work = frame[[field, measure]].dropna()
+            work = work[work[field].astype(str).str.strip().ne("")]
+            if work.empty:
+                return []
+            result = work.groupby(field, dropna=False)[measure].sum().sort_values(ascending=False).head(limit)
+            return [{"label": str(label), "value": float(value)} for label, value in result.items()]
+
+        trend: List[Dict[str, Any]] = []
+        if "_period" in frame and "_quantity" in frame:
+            aggregations = {"quantity_mt": ("_quantity", "sum"), "records": ("_quantity", "size")}
+            if "_value" in frame:
+                aggregations["trade_value"] = ("_value", "sum")
+            grouped = frame.dropna(subset=["_period"]).groupby("_period", as_index=False).agg(**aggregations).sort_values("_period")
+            trend = [
+                {"period": row["_period"].strftime("%Y-%m-%d"), "quantity_mt": float(row["quantity_mt"]), "trade_value": (float(row["trade_value"]) if "trade_value" in grouped.columns and pd.notna(row["trade_value"]) else None), "records": int(row["records"])}
+                for _, row in grouped.iterrows()
+            ]
+
+        currencies = []
+        if currency_field and "_value" in frame:
+            for currency, value in frame.groupby(currency_field)["_value"].sum().sort_values(ascending=False).items():
+                currencies.append({"currency": str(currency), "value": float(value)})
+
+        map_flows: List[Dict[str, Any]] = []
+        if reporter_field and partner_field and "_quantity" in frame:
+            flow_fields = [reporter_field, partner_field, "_quantity"]
+            for optional in (reporter_iso_field, partner_iso_field):
+                if optional and optional not in flow_fields:
+                    flow_fields.append(optional)
+            flow_frame = frame[flow_fields].dropna(subset=[reporter_field, partner_field])
+            if not flow_frame.empty:
+                group_cols = [reporter_field, partner_field]
+                grouped = flow_frame.groupby(group_cols, as_index=False)['_quantity'].sum().sort_values('_quantity', ascending=False).head(120)
+                iso_lookup = {}
+                if reporter_iso_field or partner_iso_field:
+                    for _, source_row in flow_frame.iterrows():
+                        key = (str(source_row[reporter_field]), str(source_row[partner_field]))
+                        iso_lookup.setdefault(key, (str(source_row.get(reporter_iso_field, "")) if reporter_iso_field else "", str(source_row.get(partner_iso_field, "")) if partner_iso_field else ""))
+                for _, flow in grouped.iterrows():
+                    reporter_name = str(flow[reporter_field]); partner_name = str(flow[partner_field])
+                    reporter_iso, partner_iso = iso_lookup.get((reporter_name, partner_name), ("", ""))
+                    map_flows.append({"exporter": reporter_name, "importer": partner_name,
+                                      "exporter_iso2": reporter_iso, "importer_iso2": partner_iso,
+                                      "quantity_mt": float(flow["_quantity"])})
+
+        quantity_total = float(frame["_quantity"].sum()) if "_quantity" in frame else None
+        currency_count = int(frame[currency_field].nunique(dropna=True)) if currency_field else 0
+        single_currency_value = None
+        single_currency = None
+        if currency_count == 1 and "_value" in frame:
+            single_currency = str(frame[currency_field].dropna().iloc[0])
+            single_currency_value = float(frame["_value"].sum())
+
+        return {
+            "dataset": dataset,
+            "metrics": {
+                "records": int(len(frame)),
+                "quantity_mt": quantity_total,
+                "trade_value": single_currency_value,
+                "trade_value_currency": single_currency,
+                "currency_count": currency_count,
+                "reporter_count": int(frame[reporter_field].nunique(dropna=True)) if reporter_field else None,
+                "partner_count": int(frame[partner_field].nunique(dropna=True)) if partner_field else None,
+                "commodity_count": int(frame[commodity_field].nunique(dropna=True)) if commodity_field else None,
+            },
+            "trend": trend,
+            "top_reporters": ranked(reporter_field, "_quantity"),
+            "top_partners": ranked(partner_field, "_quantity"),
+            "top_commodities": ranked(commodity_field, "_quantity"),
+            "currency_totals": currencies[:12],
+            "map_flows": map_flows,
+            "dimensions": {
+                "reporters": sorted(frame[reporter_field].dropna().astype(str).unique().tolist()) if reporter_field else [],
+                "partners": sorted(frame[partner_field].dropna().astype(str).unique().tolist()) if partner_field else [],
+                "hs_codes": sorted(frame[hs_field].dropna().astype(str).str.replace(".0", "", regex=False).unique().tolist()) if hs_field else [],
+                "commodities": sorted(frame[commodity_field].dropna().astype(str).unique().tolist()) if commodity_field else [],
+            },
+            "filters": {"reporter": reporter, "partner": partner, "hs_code": hs_code, "year_from": year_from, "year_to": year_to},
+            "fields": {
+                "period": period_field, "quantity": quantity_field,
+                "reporter": reporter_field, "partner": partner_field,
+                "commodity": commodity_field, "currency": currency_field,
+                "value": value_field,
+            },
+            "caveats": [
+                "Trade values are not summed across currencies." if currency_count > 1 else "Trade value uses the source currency.",
+                "Quantity totals use the uploaded metric-tonne field and do not infer missing quantities.",
+            ],
+        }
+
     def summary(self) -> Dict[str, Any]:
         datasets = self.datasets()
         with self.session() as db:
@@ -424,7 +573,8 @@ class DataHubStore:
             "provider": request.provider, "connection_label": request.connection_label,
             "endpoint_url": request.endpoint_url, "key_mask": key_mask,
             "connected_at": connected_at, "secret_storage": "process_memory",
-            "message": "Connection saved. Provider-specific API mapping is required before scheduled ingestion.",
+            "operational_status": "credentials_saved_mapping_required",
+            "message": "Credentials saved for this running process. No provider data is being ingested until a reviewed connector mapping is configured.",
         }
 
     def compare(self, dataset_ids: List[str]) -> Dict[str, Any]:
@@ -502,13 +652,20 @@ class DataHubStore:
                 raise KeyError(relationship_id)
             row = db.execute("SELECT * FROM relationships WHERE id=?", (relationship_id,)).fetchone()
         payload = json.loads(row["proposal_json"])
-        payload.update({"status": status, "approved_at": approved_at})
+        payload.update({
+            "status": status,
+            "approved_at": approved_at,
+            "execution_status": "proposal_only_not_materialized",
+        })
         return payload
 
 
-def create_data_hub_router(base_dir: Path) -> APIRouter:
+def create_data_hub_router(base_dir: Path, storage_dir: Path | None = None) -> APIRouter:
     router = APIRouter(prefix="/api/data-hub", tags=["data-hub"])
-    store = DataHubStore(base_dir / "uploads" / "provider_data" / "provider_master.sqlite3")
+    runtime_dir = storage_dir or Path(
+        os.getenv("HRP_STORAGE_DIR", str(base_dir / "uploads"))
+    )
+    store = DataHubStore(runtime_dir / "provider_data" / "provider_master.sqlite3")
     store.sync_app_datasets(base_dir)
 
     @router.get("/summary")
@@ -553,6 +710,17 @@ def create_data_hub_router(base_dir: Path) -> APIRouter:
             return {"dataset": store.dataset(dataset_id), "rows": store.rows(dataset_id, limit)}
         except KeyError as exc:
             raise HTTPException(404, "Dataset not found") from exc
+
+    @router.get("/datasets/{dataset_id}/analytics")
+    async def analytics(dataset_id: str, reporter: str | None = Query(None), partner: str | None = Query(None),
+                        hs_code: str | None = Query(None), year_from: int | None = Query(None),
+                        year_to: int | None = Query(None)):
+        try:
+            return store.analytics(dataset_id, reporter, partner, hs_code, year_from, year_to)
+        except KeyError as exc:
+            raise HTTPException(404, "Dataset not found") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @router.get("/compare")
     async def compare(dataset_ids: str = Query(...)):

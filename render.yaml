@@ -11,4 +11,10 @@ services:
         sync: false   # required for background live-vessel collection
       - key: PYTHON_VERSION
         value: "3.12"
+      - key: APP_ADMIN_TOKEN
+        sync: false   # protects refresh, upload and relationship-approval operations
+      - key: HRP_STORAGE_DIR
+        value: "/var/data/hrp"
+      - key: AIS_RAW_RETENTION_DAYS
+        value: "90"
 

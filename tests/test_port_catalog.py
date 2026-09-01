@@ -51,6 +51,19 @@ class PortCatalogQualityTests(unittest.TestCase):
         self.assertIn("Tanjung Bara Coal Terminal", names)
         self.assertIn("Muara Berau Anchorage Coal Terminal", names)
 
+    def test_country_facets_use_one_iso_identity_with_english_labels(self):
+        facets = ports.facets["countries"]
+        ids = [item["id"] for item in facets]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertTrue(all(len(item["id"]) == 2 for item in facets))
+        india = next(item for item in facets if item["id"] == "IN")
+        self.assertEqual(india["label"], "India")
+        self.assertTrue(ports.filtered(countries=["India"]))
+        self.assertEqual(
+            len(ports.filtered(countries=["IN"])),
+            len(ports.filtered(countries=["India"])),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

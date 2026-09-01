@@ -1,15 +1,16 @@
 """Global Energy Transition Dashboard"""
 from __future__ import annotations
-import os, json, io, csv, uuid, asyncio, logging, math, re, zipfile, sqlite3
+import os, json, io, csv, uuid, asyncio, logging, math, re, zipfile, sqlite3, time, hmac
+from collections import defaultdict, deque
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 import duckdb
-from fastapi import FastAPI, UploadFile, File, Query, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, UploadFile, File, Query, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
@@ -22,7 +23,12 @@ from port_catalog import PortCatalog
 from imd_coastal_weather import ImdCoastalWeatherManager, expand_imd_records
 from bmkg_marine_weather import BmkgMarineWeatherManager
 from sea_marine_weather import SeaMarineWeatherManager
+from major_port_weather import MajorPortWeatherManager
 from global_cyclones import GlobalCycloneManager
+from coastal_weather_schema import (
+    COASTAL_WEATHER_SOURCE_CATALOG,
+    normalize_coastal_weather_rows,
+)
 from river_levels import RiverLevelManager, SOURCE_CATALOG, export_rows_csv, export_river_levels_xlsx
 from data_hub import create_data_hub_router
 
@@ -38,8 +44,12 @@ except ImportError:
     # loading becomes available after requirements.txt is installed.
     pass
 DATA_DIR = BASE_DIR / "data"
-UPLOAD_DIR = BASE_DIR / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
+# Hosted deployments can point this at a persistent mounted disk. Local
+# development keeps the existing repository-local uploads directory.
+UPLOAD_DIR = Path(
+    os.getenv("HRP_STORAGE_DIR", str(BASE_DIR / "uploads"))
+).expanduser().resolve()
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 COAL_UPLOAD_DIR = UPLOAD_DIR / "coal"
 COAL_UPLOAD_DIR.mkdir(exist_ok=True)
 BUNDLED_DATA_DIR = UPLOAD_DIR / "_bundled_data"
@@ -118,12 +128,19 @@ AIS_BACKGROUND_REGION_IDS = (
 AIS_DATA_DIR = UPLOAD_DIR / "_ais"
 AIS_DATA_DIR.mkdir(exist_ok=True)
 AIS_TRAIL_DB_PATH = AIS_DATA_DIR / "observations.sqlite3"
+AIS_RAW_RETENTION_DAYS = max(1, int(os.getenv("AIS_RAW_RETENTION_DAYS", "90")))
+AIS_MAX_OBSERVATIONS = max(10000, int(os.getenv("AIS_MAX_OBSERVATIONS", "2000000")))
+AIS_MAINTENANCE_INTERVAL_SECONDS = max(
+    300, int(os.getenv("AIS_MAINTENANCE_INTERVAL_SECONDS", "3600"))
+)
 IMD_COASTAL_CACHE_DIR = UPLOAD_DIR / "_imd_coastal_weather"
 IMD_COASTAL_CACHE_PATH = IMD_COASTAL_CACHE_DIR / "latest.json"
 BMKG_MARINE_CACHE_DIR = UPLOAD_DIR / "_bmkg_marine_weather"
 BMKG_MARINE_CACHE_PATH = BMKG_MARINE_CACHE_DIR / "latest.json"
 SEA_MARINE_CACHE_DIR = UPLOAD_DIR / "_sea_marine_weather"
 SEA_MARINE_CACHE_PATH = SEA_MARINE_CACHE_DIR / "latest.json"
+MAJOR_PORT_WEATHER_CACHE_DIR = UPLOAD_DIR / "_major_port_weather"
+MAJOR_PORT_WEATHER_CACHE_PATH = MAJOR_PORT_WEATHER_CACHE_DIR / "latest.json"
 GLOBAL_CYCLONE_CACHE_DIR = UPLOAD_DIR / "_global_cyclones"
 GLOBAL_CYCLONE_CACHE_PATH = GLOBAL_CYCLONE_CACHE_DIR / "latest.json"
 RIVER_LEVEL_CACHE_DIR = UPLOAD_DIR / "_river_levels"
@@ -151,6 +168,43 @@ def _init_ais_trail_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_ais_observations_mmsi_time "
             "ON ais_observations (mmsi, observed_at)"
         )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ais_observations_time "
+            "ON ais_observations (observed_at)"
+        )
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ais_latest_positions (
+                mmsi TEXT PRIMARY KEY,
+                observed_at TEXT NOT NULL,
+                latitude REAL NOT NULL,
+                longitude REAL NOT NULL,
+                sog_kn REAL,
+                cog_deg REAL,
+                heading_deg REAL,
+                vessel_name TEXT
+            )
+            """
+        )
+        latest_count = db.execute(
+            "SELECT COUNT(*) FROM ais_latest_positions"
+        ).fetchone()[0]
+        if not latest_count:
+            db.execute(
+                """
+                INSERT OR REPLACE INTO ais_latest_positions
+                SELECT observation.mmsi, observation.observed_at,
+                       observation.latitude, observation.longitude,
+                       observation.sog_kn, observation.cog_deg,
+                       observation.heading_deg, observation.vessel_name
+                FROM ais_observations AS observation
+                JOIN (
+                    SELECT mmsi, MAX(id) AS latest_id
+                    FROM ais_observations
+                    GROUP BY mmsi
+                ) AS latest ON latest.latest_id = observation.id
+                """
+            )
 
 
 _init_ais_trail_db()
@@ -1636,7 +1690,7 @@ ports = PortCatalog(con)
 ports.refresh()
 
 app = FastAPI(title="Global Energy & Maritime Intelligence", version="4.0.0")
-app.include_router(create_data_hub_router(BASE_DIR))
+app.include_router(create_data_hub_router(BASE_DIR, storage_dir=UPLOAD_DIR))
 cors_origins = [
     value.strip()
     for value in os.getenv(
@@ -1650,8 +1704,78 @@ app.add_middleware(
     allow_origins=cors_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_headers=["Content-Type", "Authorization", "X-Admin-Token"],
 )
+
+ADMIN_API_TOKEN = os.getenv("APP_ADMIN_TOKEN", "").strip()
+REQUIRE_ADMIN_TOKEN = bool(os.getenv("RENDER")) or os.getenv(
+    "APP_ENV", "development"
+).strip().lower() == "production"
+_rate_windows: Dict[str, deque] = defaultdict(deque)
+_MUTATING_ADMIN_PREFIXES = (
+    "/api/data-hub/upload",
+    "/api/data-hub/api-connections",
+    "/api/data-hub/relationships/",
+    "/api/imd/coastal-weather/refresh",
+    "/api/bmkg/marine-weather/refresh",
+    "/api/sea/marine-weather/refresh",
+    "/api/major-port-weather/refresh",
+    "/api/weather/cyclones/refresh",
+    "/api/river-levels/refresh",
+)
+
+
+@app.middleware("http")
+async def security_and_rate_limit(request: Request, call_next):
+    """Protect expensive writes and add baseline browser security headers."""
+    path = request.url.path
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        client = request.client.host if request.client else "unknown"
+        bucket = f"{client}:{path.split('/', 3)[:3]}"
+        now = time.monotonic()
+        window = _rate_windows[bucket]
+        while window and now - window[0] > 60:
+            window.popleft()
+        limit = 12 if path.startswith(("/api/chat", "/api/data-hub/upload")) else 40
+        if len(window) >= limit:
+            return JSONResponse(
+                {"detail": "Too many requests. Please wait before trying again."},
+                status_code=429,
+                headers={"Retry-After": "60"},
+            )
+        window.append(now)
+        if REQUIRE_ADMIN_TOKEN and not ADMIN_API_TOKEN and path.startswith(_MUTATING_ADMIN_PREFIXES):
+            return JSONResponse(
+                {"detail": "Administrator operations are disabled until APP_ADMIN_TOKEN is configured."},
+                status_code=503,
+            )
+        if ADMIN_API_TOKEN and path.startswith(_MUTATING_ADMIN_PREFIXES):
+            supplied = request.headers.get("X-Admin-Token", "")
+            if not hmac.compare_digest(supplied, ADMIN_API_TOKEN):
+                return JSONResponse(
+                    {"detail": "Administrator token required for this operation."},
+                    status_code=401,
+                )
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+    )
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; img-src 'self' data: blob: https:; "
+        "style-src 'self' 'unsafe-inline' https:; script-src 'self' https:; "
+        "connect-src 'self' https: wss:; font-src 'self' data: https:; "
+        "frame-ancestors 'self'; base-uri 'self'; form-action 'self'",
+    )
+    if request.url.scheme == "https":
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
+
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 @app.get("/")
@@ -1660,9 +1784,6 @@ async def root():
 
 class ChatRequest(BaseModel):
     message: str
-    use_local_llm: bool = False
-    local_llm_url: Optional[str] = None
-    local_model: Optional[str] = "local-model"
 
 class VesselTrackRequest(BaseModel):
     ids: List[str] = []
@@ -3633,6 +3754,30 @@ def _ais_text(value: Any) -> str:
     return str(value or "").replace("@", " ").strip()
 
 
+_last_ais_maintenance_at = 0.0
+
+
+def _maintain_ais_observations(db: sqlite3.Connection, *, force: bool = False) -> None:
+    """Bound raw AIS growth while retaining one current position per vessel."""
+    global _last_ais_maintenance_at
+    now = time.monotonic()
+    if not force and now - _last_ais_maintenance_at < AIS_MAINTENANCE_INTERVAL_SECONDS:
+        return
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=AIS_RAW_RETENTION_DAYS)
+    ).isoformat()
+    db.execute("DELETE FROM ais_observations WHERE observed_at < ?", (cutoff,))
+    count = int(db.execute("SELECT COUNT(*) FROM ais_observations").fetchone()[0])
+    excess = max(0, count - AIS_MAX_OBSERVATIONS)
+    if excess:
+        db.execute(
+            "DELETE FROM ais_observations WHERE id IN "
+            "(SELECT id FROM ais_observations ORDER BY id LIMIT ?)",
+            (excess,),
+        )
+    _last_ais_maintenance_at = now
+
+
 def _store_ais_observations(vessels: List[dict]) -> None:
     rows = []
     for vessel in vessels:
@@ -3685,6 +3830,25 @@ def _store_ais_observations(vessels: List[dict]) -> None:
                 """,
                 row,
             )
+            db.execute(
+                """
+                INSERT INTO ais_latest_positions (
+                    mmsi, observed_at, latitude, longitude, sog_kn, cog_deg,
+                    heading_deg, vessel_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(mmsi) DO UPDATE SET
+                    observed_at=excluded.observed_at,
+                    latitude=excluded.latitude,
+                    longitude=excluded.longitude,
+                    sog_kn=excluded.sog_kn,
+                    cog_deg=excluded.cog_deg,
+                    heading_deg=excluded.heading_deg,
+                    vessel_name=CASE WHEN excluded.vessel_name != ''
+                        THEN excluded.vessel_name ELSE ais_latest_positions.vessel_name END
+                """,
+                row,
+            )
+        _maintain_ais_observations(db)
 
 
 def _load_latest_ais_observations(limit: int = 20000) -> Dict[str, dict]:
@@ -3692,23 +3856,10 @@ def _load_latest_ais_observations(limit: int = 20000) -> Dict[str, dict]:
     with sqlite3.connect(AIS_TRAIL_DB_PATH) as db:
         rows = db.execute(
             """
-            SELECT
-                observation.mmsi,
-                observation.observed_at,
-                observation.latitude,
-                observation.longitude,
-                observation.sog_kn,
-                observation.cog_deg,
-                observation.heading_deg,
-                observation.vessel_name
-            FROM ais_observations AS observation
-            JOIN (
-                SELECT mmsi, MAX(id) AS latest_id
-                FROM ais_observations
-                GROUP BY mmsi
-            ) AS latest
-              ON latest.latest_id = observation.id
-            ORDER BY observation.id DESC
+            SELECT mmsi, observed_at, latitude, longitude, sog_kn, cog_deg,
+                   heading_deg, vessel_name
+            FROM ais_latest_positions
+            ORDER BY observed_at DESC
             LIMIT ?
             """,
             (max(1, min(int(limit), 25000)),),
@@ -4149,6 +4300,7 @@ bmkg_marine_weather_manager = BmkgMarineWeatherManager(
     BMKG_MARINE_CACHE_PATH
 )
 sea_marine_weather_manager = SeaMarineWeatherManager(SEA_MARINE_CACHE_PATH)
+major_port_weather_manager = MajorPortWeatherManager(MAJOR_PORT_WEATHER_CACHE_PATH)
 global_cyclone_manager = GlobalCycloneManager(
     GLOBAL_CYCLONE_CACHE_PATH, ports.ports
 )
@@ -4185,6 +4337,12 @@ async def start_sea_marine_weather_collection():
 
 
 @app.on_event("startup")
+async def start_major_port_weather_collection():
+    """Refresh keyless official forecasts for major dry-bulk ports worldwide."""
+    major_port_weather_manager.start()
+
+
+@app.on_event("startup")
 async def start_global_cyclone_collection():
     """Refresh the global GDACS tropical-cyclone layer in the background."""
     global_cyclone_manager.start()
@@ -4217,6 +4375,11 @@ async def stop_sea_marine_weather_collection():
 
 
 @app.on_event("shutdown")
+async def stop_major_port_weather_collection():
+    await major_port_weather_manager.stop()
+
+
+@app.on_event("shutdown")
 async def stop_global_cyclone_collection():
     await global_cyclone_manager.stop()
 
@@ -4228,14 +4391,47 @@ async def stop_river_level_collection():
 
 def _imd_weather_payload(day: int) -> Dict[str, Any]:
     payload = dict(imd_coastal_weather_manager.payload)
+    fetched_at = payload.get("fetched_at")
+    try:
+        fetched_time = datetime.fromisoformat(str(fetched_at).replace("Z", "+00:00"))
+        if fetched_time.tzinfo is None:
+            fetched_time = fetched_time.replace(tzinfo=timezone.utc)
+        refresh_age_hours = max(
+            0.0,
+            round((datetime.now(timezone.utc) - fetched_time.astimezone(timezone.utc)).total_seconds() / 3600, 1),
+        )
+    except (TypeError, ValueError):
+        refresh_age_hours = None
     raw_rows = [
         row for row in payload.get("rows", [])
         if int(row.get("day") or 0) == day
     ]
-    payload["rows"] = expand_imd_records(raw_rows)
+    payload["rows"] = normalize_coastal_weather_rows(
+        expand_imd_records(raw_rows), fetched_at=payload.get("fetched_at")
+    )
     payload["day"] = day
     payload["last_error"] = imd_coastal_weather_manager.last_error
+    payload["refresh_age_hours"] = refresh_age_hours
+    payload["stale"] = bool(refresh_age_hours is not None and refresh_age_hours > 36)
     return payload
+
+
+COASTAL_QUALITY_EXPORT_FIELDS = [
+    "record_grain", "data_class", "source_authority", "fetched_at",
+    "freshness_status", "freshness_age_hours", "data_confidence",
+    "quality_score", "quality_flags", "port_operational_status",
+    "port_status_reported", "port_status_source", "port_status_updated_at",
+    "operational_notice", "forecast_24h", "forecast_72h",
+]
+
+
+def _write_weather_rows(writer: csv.DictWriter, rows: List[Dict[str, Any]]) -> None:
+    for value in rows:
+        row = dict(value)
+        for field in ("quality_flags", "operational_impacts", "affected_countries", "affected_ports"):
+            if isinstance(row.get(field), (list, dict)):
+                row[field] = json.dumps(row[field], ensure_ascii=False)
+        writer.writerow(row)
 
 
 @app.get("/api/imd/coastal-weather")
@@ -4257,6 +4453,7 @@ async def refresh_imd_coastal_weather(
     try:
         await imd_coastal_weather_manager.refresh(force=True)
     except Exception as exc:
+        imd_coastal_weather_manager.last_error = str(exc)
         if not imd_coastal_weather_manager.payload:
             raise HTTPException(
                 503, f"IMD coastal weather refresh failed: {exc}"
@@ -4282,11 +4479,16 @@ async def export_imd_coastal_weather_csv():
         "wave_height_min_m", "wave_height_max_m", "severity", "summary",
         "weather_risk_score", "weather_risk_level", "operational_impacts",
         "risk_methodology", "source_issue_time", "source_url",
+        *COASTAL_QUALITY_EXPORT_FIELDS,
     ]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(expand_imd_records(imd_coastal_weather_manager.payload.get("rows", [])))
+    rows = normalize_coastal_weather_rows(
+        expand_imd_records(imd_coastal_weather_manager.payload.get("rows", [])),
+        fetched_at=imd_coastal_weather_manager.payload.get("fetched_at"),
+    )
+    _write_weather_rows(writer, rows)
     return StreamingResponse(
         iter([buffer.getvalue()]),
         media_type="text/csv",
@@ -4307,7 +4509,11 @@ async def bmkg_marine_weather(hours: int = Query(0, ge=0, le=96)):
             raise HTTPException(
                 503, f"BMKG maritime weather is temporarily unavailable: {exc}"
             ) from exc
-    return bmkg_marine_weather_manager.selected_payload(hours)
+    payload = bmkg_marine_weather_manager.selected_payload(hours)
+    payload["rows"] = normalize_coastal_weather_rows(
+        payload.get("rows", []), fetched_at=payload.get("fetched_at")
+    )
+    return payload
 
 
 @app.post("/api/bmkg/marine-weather/refresh")
@@ -4319,7 +4525,11 @@ async def refresh_bmkg_marine_weather(hours: int = Query(0, ge=0, le=96)):
             raise HTTPException(
                 503, f"BMKG maritime weather refresh failed: {exc}"
             ) from exc
-    return bmkg_marine_weather_manager.selected_payload(hours)
+    payload = bmkg_marine_weather_manager.selected_payload(hours)
+    payload["rows"] = normalize_coastal_weather_rows(
+        payload.get("rows", []), fetched_at=payload.get("fetched_at")
+    )
+    return payload
 
 
 @app.get("/api/bmkg/marine-weather/export.csv")
@@ -4343,11 +4553,15 @@ async def export_bmkg_marine_weather_csv():
         "temperature_max_c", "humidity_min_pct", "humidity_max_pct",
         "low_tide_height_m", "low_tide_time", "high_tide_height_m",
         "high_tide_time", "severity", "source_url",
+        *COASTAL_QUALITY_EXPORT_FIELDS,
     ]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(bmkg_marine_weather_manager.payload.get("rows", []))
+    _write_weather_rows(writer, normalize_coastal_weather_rows(
+        bmkg_marine_weather_manager.payload.get("rows", []),
+        fetched_at=bmkg_marine_weather_manager.payload.get("fetched_at"),
+    ))
     return StreamingResponse(
         iter([buffer.getvalue()]),
         media_type="text/csv",
@@ -4368,7 +4582,11 @@ async def sea_marine_weather(
             await sea_marine_weather_manager.refresh(force=True)
         except Exception as exc:
             raise HTTPException(503, f"SEA maritime weather is temporarily unavailable: {exc}") from exc
-    return sea_marine_weather_manager.selected_payload(country, hours)
+    payload = sea_marine_weather_manager.selected_payload(country, hours)
+    payload["rows"] = normalize_coastal_weather_rows(
+        payload.get("rows", []), fetched_at=payload.get("fetched_at")
+    )
+    return payload
 
 
 @app.post("/api/sea/marine-weather/refresh")
@@ -4380,7 +4598,11 @@ async def refresh_sea_marine_weather(
     except Exception as exc:
         if not sea_marine_weather_manager.payload:
             raise HTTPException(503, f"SEA maritime weather refresh failed: {exc}") from exc
-    return sea_marine_weather_manager.selected_payload(country, hours)
+    payload = sea_marine_weather_manager.selected_payload(country, hours)
+    payload["rows"] = normalize_coastal_weather_rows(
+        payload.get("rows", []), fetched_at=payload.get("fetched_at")
+    )
+    return payload
 
 
 @app.get("/api/sea/marine-weather/export.csv")
@@ -4391,6 +4613,9 @@ async def export_sea_marine_weather_csv(country: Optional[str] = Query(None)):
         except Exception as exc:
             raise HTTPException(503, f"SEA maritime weather is temporarily unavailable: {exc}") from exc
     rows = [row for row in sea_marine_weather_manager.payload.get("rows", []) if not country or str(row.get("country", "")).casefold() == country.casefold()]
+    rows = normalize_coastal_weather_rows(
+        rows, fetched_at=sea_marine_weather_manager.payload.get("fetched_at")
+    )
     fields = [
         "provider", "provider_code", "country", "location_type", "location_id",
         "location_name", "marine_area", "forecast_basis", "latitude", "longitude",
@@ -4403,14 +4628,47 @@ async def export_sea_marine_weather_csv(country: Optional[str] = Query(None)):
         "visibility_source", "visibility_documented_unit", "offshore_marine_area",
         "weather_risk_score", "weather_risk_level", "operational_impacts", "risk_methodology",
         "source_url",
+        *COASTAL_QUALITY_EXPORT_FIELDS,
     ]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore")
-    writer.writeheader(); writer.writerows(rows)
+    writer.writeheader(); _write_weather_rows(writer, rows)
     suffix = re.sub(r"[^a-z0-9]+", "_", (country or "all").lower()).strip("_")
     return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv", headers={
         "Content-Disposition": f'attachment; filename="sea_marine_weather_{suffix}.csv"'
     })
+
+
+@app.get("/api/major-port-weather")
+async def major_port_weather(
+    country: Optional[str] = Query(None), region: Optional[str] = Query(None), hours: int = Query(0, ge=0, le=96),
+):
+    if not major_port_weather_manager.payload:
+        try:
+            await major_port_weather_manager.refresh(force=True)
+        except Exception as exc:
+            raise HTTPException(503, f"Major-port weather is temporarily unavailable: {exc}") from exc
+    payload = major_port_weather_manager.selected_payload(country, hours, region)
+    payload["rows"] = normalize_coastal_weather_rows(
+        payload.get("rows", []), fetched_at=payload.get("fetched_at")
+    )
+    return payload
+
+
+@app.post("/api/major-port-weather/refresh")
+async def refresh_major_port_weather(
+    country: Optional[str] = Query(None), region: Optional[str] = Query(None), hours: int = Query(0, ge=0, le=96),
+):
+    try:
+        await major_port_weather_manager.refresh(force=True)
+    except Exception as exc:
+        if not major_port_weather_manager.payload:
+            raise HTTPException(503, f"Major-port weather refresh failed: {exc}") from exc
+    payload = major_port_weather_manager.selected_payload(country, hours, region)
+    payload["rows"] = normalize_coastal_weather_rows(
+        payload.get("rows", []), fetched_at=payload.get("fetched_at")
+    )
+    return payload
 
 
 @app.get("/api/weather/cyclones")
@@ -4421,6 +4679,9 @@ async def global_cyclones():
         except Exception as exc:
             raise HTTPException(503, f"Global cyclone data is temporarily unavailable: {exc}") from exc
     payload = dict(global_cyclone_manager.payload)
+    payload["rows"] = normalize_coastal_weather_rows(
+        payload.get("rows", []), fetched_at=payload.get("fetched_at")
+    )
     payload["last_error"] = global_cyclone_manager.last_error
     return payload
 
@@ -4433,6 +4694,9 @@ async def refresh_global_cyclones():
         if not global_cyclone_manager.payload:
             raise HTTPException(503, f"Global cyclone refresh failed: {exc}") from exc
     payload = dict(global_cyclone_manager.payload)
+    payload["rows"] = normalize_coastal_weather_rows(
+        payload.get("rows", []), fetched_at=payload.get("fetched_at")
+    )
     payload["last_error"] = global_cyclone_manager.last_error
     return payload
 
@@ -4452,15 +4716,15 @@ async def export_global_cyclones_csv():
         "movement_bearing_deg", "affected_countries", "possible_landfall",
         "impact_radius_km", "affected_port_count", "affected_ports",
         "impact_methodology", "source_url", "forecast_disclaimer",
+        *COASTAL_QUALITY_EXPORT_FIELDS,
     ]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
-    for item in global_cyclone_manager.payload.get("rows", []):
-        row = dict(item)
-        for field in ("affected_countries", "affected_ports"):
-            row[field] = json.dumps(row.get(field, []), ensure_ascii=False)
-        writer.writerow(row)
+    _write_weather_rows(writer, normalize_coastal_weather_rows(
+        global_cyclone_manager.payload.get("rows", []),
+        fetched_at=global_cyclone_manager.payload.get("fetched_at"),
+    ))
     return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv", headers={
         "Content-Disposition": 'attachment; filename="global_active_cyclones.csv"'
     })
@@ -4468,7 +4732,7 @@ async def export_global_cyclones_csv():
 
 @app.get("/api/coastal-weather/export.csv")
 async def export_coastal_weather_csv(
-    source: str = Query("all", pattern="^(india|indonesia|malaysia|thailand|philippines|singapore|brunei|cambodia|myanmar|vietnam|china|sea|cyclones|all|both)$"),
+    source: str = Query("all", pattern="^(india|indonesia|malaysia|thailand|philippines|singapore|brunei|cambodia|myanmar|vietnam|china|sea|australia|united_states|canada|japan|europe|south_america|africa|middle_east|major_ports|cyclones|all|both)$"),
 ):
     rows: List[Dict[str, Any]] = []
     if source in {"india", "both", "all"}:
@@ -4503,6 +4767,25 @@ async def export_coastal_weather_csv(
         country = sea_countries.get(source)
         sea_rows = sea_marine_weather_manager.payload.get("rows", [])
         rows.extend(row for row in sea_rows if not country or row.get("country") == country)
+    major_countries = {
+        "australia": "Australia", "united_states": "United States",
+        "canada": "Canada", "japan": "Japan",
+    }
+    major_regions = {
+        "europe": "Europe", "south_america": "South America",
+        "africa": "Africa", "middle_east": "Middle East",
+    }
+    if source in {"major_ports", "all"} or source in major_countries or source in major_regions:
+        if not major_port_weather_manager.payload:
+            try:
+                await major_port_weather_manager.refresh(force=True)
+            except Exception as exc:
+                if not rows:
+                    raise HTTPException(503, f"Major-port weather is unavailable: {exc}") from exc
+        country = major_countries.get(source)
+        region = major_regions.get(source)
+        major_rows = major_port_weather_manager.payload.get("rows", [])
+        rows.extend(row for row in major_rows if (not country or row.get("country") == country) and (not region or row.get("region") == region))
     if source in {"cyclones", "all"}:
         if not global_cyclone_manager.payload:
             try:
@@ -4511,8 +4794,9 @@ async def export_coastal_weather_csv(
                 if not rows:
                     raise HTTPException(503, f"Global cyclone data is unavailable: {exc}") from exc
         rows.extend(global_cyclone_manager.payload.get("rows", []))
+    rows = normalize_coastal_weather_rows(rows)
     fields = [
-        "provider", "country", "location_type", "location_id", "location_name",
+        "provider", "country", "region", "location_type", "location_id", "location_name",
         "latitude", "longitude", "issued_at", "valid_from", "valid_to",
         "weather_condition", "warning_description", "wind_direction_from",
         "wind_direction_to", "wind_speed_min_kn", "wind_speed_max_kn",
@@ -4521,7 +4805,7 @@ async def export_coastal_weather_csv(
         "current_direction_from", "current_direction_to", "current_speed_min_source",
         "current_speed_max_source", "current_speed_documented_unit", "visibility_source",
         "visibility_documented_unit", "temperature_min_c",
-        "temperature_max_c", "humidity_min_pct", "humidity_max_pct",
+        "temperature_max_c", "humidity_min_pct", "humidity_max_pct", "rainfall_mm",
         "low_tide_height_m", "low_tide_time", "high_tide_height_m",
         "high_tide_time", "marine_area", "forecast_basis", "severity", "summary", "source_url",
         "offshore_marine_area", "weather_risk_score", "weather_risk_level",
@@ -4531,13 +4815,18 @@ async def export_coastal_weather_csv(
         "movement_bearing_deg", "affected_countries", "possible_landfall",
         "impact_radius_km", "affected_port_count", "affected_ports",
         "impact_methodology", "forecast_disclaimer",
+        "record_grain", "data_class", "source_authority", "fetched_at",
+        "freshness_status", "freshness_age_hours", "data_confidence",
+        "quality_score", "quality_flags", "port_operational_status",
+        "port_status_reported", "port_status_source", "port_status_updated_at",
+        "operational_notice", "forecast_24h", "forecast_72h",
     ]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
     for item in rows:
         row = dict(item)
-        for field in ("affected_countries", "affected_ports", "operational_impacts"):
+        for field in ("affected_countries", "affected_ports", "operational_impacts", "quality_flags"):
             if isinstance(row.get(field), (list, dict)):
                 row[field] = json.dumps(row[field], ensure_ascii=False)
         writer.writerow(row)
@@ -4547,6 +4836,238 @@ async def export_coastal_weather_csv(
     )
 
 
+async def _current_port_weather_rows(source: str) -> List[Dict[str, Any]]:
+    """Return one current official forecast per port for report-style exports."""
+    rows: List[Dict[str, Any]] = []
+    if source in {"india", "both", "all"}:
+        if not imd_coastal_weather_manager.payload:
+            try:
+                await imd_coastal_weather_manager.refresh(force=True)
+            except Exception as exc:
+                if source == "india":
+                    raise HTTPException(503, f"IMD coastal weather is unavailable: {exc}") from exc
+        if imd_coastal_weather_manager.payload:
+            rows.extend(_imd_weather_payload(1).get("rows", []))
+    if source in {"indonesia", "both", "all"}:
+        if not bmkg_marine_weather_manager.payload:
+            try:
+                await bmkg_marine_weather_manager.refresh(force=True)
+            except Exception as exc:
+                if source == "indonesia" or not rows:
+                    raise HTTPException(503, f"BMKG maritime weather is unavailable: {exc}") from exc
+        if bmkg_marine_weather_manager.payload:
+            rows.extend(bmkg_marine_weather_manager.selected_payload(0).get("rows", []))
+    sea_countries = {
+        "malaysia": "Malaysia", "thailand": "Thailand", "philippines": "Philippines",
+        "singapore": "Singapore", "brunei": "Brunei", "cambodia": "Cambodia",
+        "myanmar": "Myanmar", "vietnam": "Vietnam", "china": "China",
+    }
+    if source in {"sea", "all"} or source in sea_countries:
+        if not sea_marine_weather_manager.payload:
+            try:
+                await sea_marine_weather_manager.refresh(force=True)
+            except Exception as exc:
+                if not rows:
+                    raise HTTPException(503, f"SEA maritime weather is unavailable: {exc}") from exc
+        if sea_marine_weather_manager.payload:
+            rows.extend(sea_marine_weather_manager.selected_payload(sea_countries.get(source), 0).get("rows", []))
+    major_countries = {
+        "australia": "Australia", "united_states": "United States",
+        "canada": "Canada", "japan": "Japan",
+    }
+    major_regions = {
+        "europe": "Europe", "south_america": "South America",
+        "africa": "Africa", "middle_east": "Middle East",
+    }
+    if source in {"major_ports", "all"} or source in major_countries or source in major_regions:
+        if not major_port_weather_manager.payload:
+            try:
+                await major_port_weather_manager.refresh(force=True)
+            except Exception as exc:
+                if not rows:
+                    raise HTTPException(503, f"Major-port weather is unavailable: {exc}") from exc
+        if major_port_weather_manager.payload:
+            rows.extend(major_port_weather_manager.selected_payload(
+                major_countries.get(source), 0, major_regions.get(source)
+            ).get("rows", []))
+    return [
+        row for row in normalize_coastal_weather_rows(rows)
+        if row.get("location_type") == "port"
+    ]
+
+
+def _weather_report_wind(row: Dict[str, Any]) -> str:
+    parts: List[str] = []
+    low_kn, high_kn = row.get("wind_speed_min_kn"), row.get("wind_speed_max_kn")
+    low_kmh, high_kmh = row.get("wind_speed_min_kmph"), row.get("wind_speed_max_kmph")
+    if low_kn is not None or high_kn is not None:
+        low, high = low_kn if low_kn is not None else high_kn, high_kn if high_kn is not None else low_kn
+        parts.append(f"{low:g}-{high:g} kt" if low != high else f"{low:g} kt")
+    elif low_kmh is not None or high_kmh is not None:
+        low, high = low_kmh if low_kmh is not None else high_kmh, high_kmh if high_kmh is not None else low_kmh
+        parts.append(f"{low:g}-{high:g} km/h" if low != high else f"{low:g} km/h")
+    if row.get("gust_kmph") is not None:
+        parts.append(f"gust {float(row['gust_kmph']):g} km/h")
+    direction = row.get("wind_direction_from")
+    direction_to = row.get("wind_direction_to")
+    if direction:
+        parts.append(f"from {direction}" + (f" to {direction_to}" if direction_to and direction_to != direction else ""))
+    return "; ".join(parts)
+
+
+def _weather_report_issue(row: Dict[str, Any]) -> str:
+    messages: List[str] = []
+    for field in ("warning_description", "operational_notice", "station_remark"):
+        value = str(row.get(field) or "").strip()
+        if value and value.casefold() not in {message.casefold() for message in messages}:
+            messages.append(value)
+    status = str(row.get("port_operational_status") or "Not reported")
+    if row.get("port_status_reported") and status not in {"Open", "Not reported"}:
+        messages.append(f"Port operating status: {status}")
+    return "; ".join(messages)
+
+
+def _weather_report_port_name(value: Any) -> str:
+    name = str(value or "Unknown").strip()
+    cleaned = re.sub(
+        r"\s+\(?(?:(?:coal|dry[- ]?bulk|container|oil|lng)\s+terminal)\)?\s*$",
+        "", name, flags=re.I,
+    ).rstrip(" (")
+    return cleaned or name
+
+
+@app.get("/api/coastal-weather/port-report.xlsx")
+async def export_coastal_port_report_xlsx(
+    source: str = Query("all", pattern="^(india|indonesia|malaysia|thailand|philippines|singapore|brunei|cambodia|myanmar|vietnam|china|sea|australia|united_states|canada|japan|europe|south_america|africa|middle_east|major_ports|all|both)$"),
+):
+    """Download current port weather in the supplied eight-column report format."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    rows = await _current_port_weather_rows(source)
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row.get("country") or "Other"), []).append(row)
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    headers = [
+        "PORT NAME", "WEATHER", "CURRENTLY PORT CLOSE", "AVERAGE TEMP (℃)",
+        "WIND FORCE", "SPECIAL ISSUE IN PORT", "WEATHER FORECAST (1 DAY)",
+        "WEATHER FORECAST (3 DAYS)",
+    ]
+    navy = "1C294A"
+    pale_blue = "EAF2F7"
+    pale_red = "FCE8EA"
+    thin = Side(style="thin", color="CBD5DC")
+    for country in sorted(grouped):
+        sheet_name = re.sub(r"[\\/*?:\[\]]+", " ", country)[:31] or "Ports"
+        sheet = workbook.create_sheet(sheet_name)
+        country_rows = sorted(grouped[country], key=lambda row: (0 if _weather_report_issue(row) else 1, str(row.get("location_name") or "")))
+        sheet.merge_cells("A1:H1")
+        sheet["A1"] = f"DAILY WEATHER REPORT FOR MAIN {country.upper()} PORTS"
+        sheet["A1"].font = Font(bold=True, color="FFFFFF", size=13)
+        sheet["A1"].fill = PatternFill("solid", fgColor=navy)
+        sheet["A1"].alignment = Alignment(horizontal="center")
+        sheet.merge_cells("A2:H2")
+        sheet["A2"] = "Official forecast data · port closure is shown only when separately reported by a port or maritime authority"
+        sheet["A2"].font = Font(italic=True, color="526572", size=9)
+        sheet["A2"].alignment = Alignment(horizontal="center")
+        for column, header in enumerate(headers, 1):
+            cell = sheet.cell(3, column, header)
+            cell.font = Font(bold=True, color="FFFFFF", size=9)
+            cell.fill = PatternFill("solid", fgColor=navy)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        for index, row in enumerate(country_rows, 4):
+            minimum = row.get("temperature_min_c")
+            maximum = row.get("temperature_max_c")
+            temperature = None
+            if minimum is not None or maximum is not None:
+                values = [float(value) for value in (minimum, maximum) if value is not None]
+                temperature = round(sum(values) / len(values), 1)
+            status = str(row.get("port_operational_status") or "Not reported")
+            closure = "YES" if status == "Closed" else "NO" if status == "Open" else status.upper() if status == "Restricted" else "Not reported"
+            issue = _weather_report_issue(row)
+            one_day = row.get("forecast_24h") or row.get("weather_description") or row.get("summary") or ""
+            values = [
+                _weather_report_port_name(row.get("location_name")), row.get("weather_condition") or row.get("rainfall_category"),
+                closure, temperature, _weather_report_wind(row), issue,
+                one_day, row.get("forecast_72h") or "",
+            ]
+            for column, value in enumerate(values, 1):
+                cell = sheet.cell(index, column, value)
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+                cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+                cell.fill = PatternFill("solid", fgColor=pale_red if issue else (pale_blue if index % 2 == 0 else "FFFFFF"))
+            if temperature is not None:
+                sheet.cell(index, 4).number_format = "0.0"
+        sheet.freeze_panes = "A4"
+        sheet.auto_filter.ref = f"A3:H{max(3, sheet.max_row)}"
+        sheet.row_dimensions[1].height = 24
+        sheet.row_dimensions[3].height = 32
+        widths = [24, 20, 20, 18, 25, 48, 52, 52]
+        for column, width in enumerate(widths, 1):
+            sheet.column_dimensions[chr(64 + column)].width = width
+    if not grouped:
+        sheet = workbook.create_sheet("No current port data")
+        sheet["A1"] = "No current port-weather records are available for this selection."
+    output = io.BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    suffix = re.sub(r"[^a-z0-9]+", "_", source.lower()).strip("_")
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="coastal_port_weather_{suffix}.xlsx"'},
+    )
+
+
+@app.get("/api/coastal-weather/sources")
+async def coastal_weather_sources():
+    """Official-source inventory, including integrations still awaiting adapters."""
+    live = sum(1 for item in COASTAL_WEATHER_SOURCE_CATALOG if str(item.get("integration", "")).startswith("live"))
+    return {
+        "sources": COASTAL_WEATHER_SOURCE_CATALOG,
+        "count": len(COASTAL_WEATHER_SOURCE_CATALOG),
+        "live_count": live,
+        "methodology": (
+            "Weather comes from the official meteorological authority. Port closure or "
+            "restriction status is shown only when separately reported by a port or maritime authority."
+        ),
+    }
+
+
+def _river_source_inventory(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    prefix_to_source = {
+        "noaa-": "noaa-nwps", "ana-": "ana-amazon",
+        "pegel-": "pegelonline", "sihka-": "indonesia-sihka",
+        "acp-": "acp-gatun",
+        "china-": "three-gorges-watch",
+    }
+    active = {
+        source_id
+        for row in rows
+        for prefix, source_id in prefix_to_source.items()
+        if str(row.get("id") or "").startswith(prefix)
+    }
+    inventory = []
+    for definition in SOURCE_CATALOG:
+        item = dict(definition)
+        item["integration_status"] = item.get("status")
+        if item.get("status") == "connected":
+            item["status"] = (
+                "active" if item.get("id") in active else "no_current_record"
+            )
+            item["availability"] = (
+                "Current records loaded" if item.get("id") in active
+                else "Connector configured; no current record loaded"
+            )
+        else:
+            item["availability"] = "Not connected to the current dashboard feed"
+        inventory.append(item)
+    return inventory
+
+
 @app.get("/api/river-levels")
 async def river_levels(
     waterway: Optional[str] = Query(None),
@@ -4554,6 +5075,7 @@ async def river_levels(
     waterbody_type: Optional[str] = Query(None, pattern="^(river|reservoir)$"),
     status: Optional[str] = Query(None),
     comparison_status: Optional[str] = Query(None, pattern="^(below_normal|normal|above_normal|unavailable)$"),
+    history_limit: int = Query(120, ge=0, le=500),
 ):
     if not river_level_manager.payload:
         try:
@@ -4573,7 +5095,19 @@ async def river_levels(
         rows = [row for row in rows if row.get("status") == status]
     if comparison_status:
         rows = [row for row in rows if row.get("comparison_status") == comparison_status]
-    payload["rows"] = rows
+    compact_rows = []
+    for source_row in rows:
+        row = dict(source_row)
+        history = list(row.get("history") or [])
+        row["history_total_count"] = len(history)
+        row["history"] = history[-history_limit:] if history_limit else []
+        compact_rows.append(row)
+    payload["rows"] = compact_rows
+    payload["history_limit"] = history_limit
+    payload["sources"] = _river_source_inventory(rows)
+    payload["connected_source_count"] = sum(
+        item["status"] == "active" for item in payload["sources"]
+    )
     payload["last_error"] = river_level_manager.last_error
     return payload
 
@@ -4586,13 +5120,30 @@ async def refresh_river_levels():
         if not river_level_manager.payload:
             raise HTTPException(503, f"Official river-level refresh failed: {exc}") from exc
     payload = dict(river_level_manager.payload)
+    compact_rows = []
+    for source_row in payload.get("rows", []):
+        row = dict(source_row)
+        history = list(row.get("history") or [])
+        row["history_total_count"] = len(history)
+        row["history"] = history[-120:]
+        compact_rows.append(row)
+    payload["rows"] = compact_rows
+    payload["history_limit"] = 120
+    payload["sources"] = _river_source_inventory(
+        list(river_level_manager.payload.get("rows", []))
+    )
+    payload["connected_source_count"] = sum(
+        item["status"] == "active" for item in payload["sources"]
+    )
     payload["last_error"] = river_level_manager.last_error
     return payload
 
 
 @app.get("/api/river-levels/sources")
 async def river_level_sources():
-    return {"sources": SOURCE_CATALOG, "count": len(SOURCE_CATALOG)}
+    rows = list(river_level_manager.payload.get("rows", []))
+    sources = _river_source_inventory(rows)
+    return {"sources": sources, "count": len(sources)}
 
 
 @app.get("/api/river-levels/export.csv")
@@ -4836,16 +5387,6 @@ async def chat(req: ChatRequest):
         raise HTTPException(400, "Empty message")
     xai_key = os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
     reply = None
-    if req.use_local_llm and req.local_llm_url:
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                r = await client.post(f"{req.local_llm_url.rstrip('/')}/chat/completions",
-                    json={"model": req.local_model or "local-model", "messages": [{"role": "user", "content": message}], "temperature": 0.2},
-                    headers={"Authorization": "Bearer lm-studio"})
-                if r.status_code == 200:
-                    reply = r.json()["choices"][0]["message"]["content"]
-        except Exception as e:
-            reply = f"(Local LLM unreachable: {e})"
     if not reply and xai_key:
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -4868,6 +5409,18 @@ async def health():
         "ports": ports.summary,
         "ais_configured": bool(AISSTREAM_API_KEY),
         "version": "4.0.0",
+        "storage": {
+            "path": str(UPLOAD_DIR),
+            "external_path_configured": bool(os.getenv("HRP_STORAGE_DIR")),
+            "persistence_note": (
+                "Persistent only when this path is backed by a mounted disk or durable volume."
+            ),
+        },
+        "admin_write_protection": {
+            "required": REQUIRE_ADMIN_TOKEN,
+            "configured": bool(ADMIN_API_TOKEN),
+        },
+        "ais_retention_days": AIS_RAW_RETENTION_DAYS,
         "time": datetime.utcnow().isoformat(),
     }
 

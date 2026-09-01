@@ -6,7 +6,8 @@ from fastapi.testclient import TestClient
 from app import app
 from river_levels import (
     _amazon_records, _gatun_record, _noaa_record, _three_gorges_record,
-    _three_gorges_yichang_record, SOURCE_CATALOG, export_river_levels_xlsx,
+    _three_gorges_yichang_record, SOURCE_CATALOG, commercial_trade_role,
+    export_river_levels_xlsx,
 )
 
 
@@ -26,6 +27,11 @@ class RiverLevelTests(unittest.TestCase):
         self.assertIn("Amazon River", waterways)
         self.assertIn("Rhine", waterways)
         self.assertTrue(any(row["waterbody_type"] == "reservoir" for row in payload["rows"]))
+        self.assertTrue(all(len(row.get("history", [])) <= 120 for row in payload["rows"]))
+        self.assertTrue(all("history_total_count" in row for row in payload["rows"]))
+        self.assertTrue(all(row.get("trade_relevance") for row in payload["rows"]))
+        self.assertTrue(all(row["country"] not in {"Bangladesh", "India"} for row in payload["rows"]))
+        self.assertTrue(all(commercial_trade_role(row) for row in payload["rows"]))
 
     def test_source_directory_is_official_and_actionable(self):
         response = self.client.get("/api/river-levels/sources")
@@ -34,7 +40,11 @@ class RiverLevelTests(unittest.TestCase):
         self.assertEqual(len(sources), len(SOURCE_CATALOG))
         ids = {source["id"] for source in sources}
         self.assertTrue({"noaa-nwps", "ana-amazon", "pegelonline", "acp-gatun", "mrc-mekong", "three-gorges-watch"}.issubset(ids))
+        self.assertTrue({"bangladesh-ffwc", "india-cwc", "india-iwai-lad", "usbr-rise"}.isdisjoint(ids))
+        self.assertTrue(all(source["region"] not in {"Bangladesh", "India"} for source in sources))
         self.assertTrue(all(source["url"].startswith("https://") for source in sources))
+        connected = [source for source in sources if source["integration_status"] == "connected"]
+        self.assertTrue(all(source["status"] in {"active", "no_current_record"} for source in connected))
 
     def test_csv_export_contains_comparable_level_fields(self):
         response = self.client.get("/api/river-levels/export.csv")
@@ -42,6 +52,9 @@ class RiverLevelTests(unittest.TestCase):
         self.assertIn("station,waterbody,basin,country,waterbody_type", response.text)
         self.assertIn("normal_level", response.text)
         self.assertIn("difference_from_normal", response.text)
+        self.assertIn("trade_relevance", response.text.splitlines()[0])
+        self.assertNotIn(",Bangladesh,", response.text)
+        self.assertNotIn(",India,", response.text)
         self.assertNotIn("forecast_level", response.text.splitlines()[0])
         self.assertIn("source_name", response.text)
 
