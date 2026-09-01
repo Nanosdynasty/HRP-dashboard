@@ -1139,6 +1139,23 @@ button, summary, label, select { -webkit-tap-highlight-color: transparent; }
 .weather-workspace-metrics strong { display: block; margin-top: 3px; overflow-wrap: anywhere; color: #203149; font-size: 9px; line-height: 1.35; }
 .weather-workspace-summary { flex: 1; margin: 10px 0; color: #526572; font-size: 9px; line-height: 1.5; }
 .weather-workspace-card > button { align-self: flex-start; margin-top: auto; }
+.port-disruption-workspace { padding: 18px 24px 30px; }
+.disruption-methodology { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-left: 4px solid #174f82; background: #eff6fa; color: #31495b; font-size: 11px; line-height: 1.5; }
+.disruption-methodology strong { color: #123f6a; white-space: nowrap; }
+.disruption-empty { margin: 15px 0; padding: 22px; border: 1px solid #dbe5ea; background: #fff; }
+.disruption-empty h2 { margin: 0 0 7px; color: #203149; font-size: 16px; }
+.disruption-empty p { margin: 0; color: #5d6e79; font-size: 11px; line-height: 1.5; }
+.disruption-source-grid, .disruption-active-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.disruption-source-card { display: flex; min-height: 238px; flex-direction: column; padding: 16px; border-top: 3px solid #174f82; background: #fff; box-shadow: 0 5px 18px rgba(27,45,56,.08); }
+.disruption-source-card header { display: flex; justify-content: space-between; gap: 8px; color: #577282; font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.disruption-source-card header b { padding: 3px 5px; color: #174f82; background: #e8f2f8; font-size: 7px; }
+.disruption-source-card h2 { margin: 10px 0 3px; color: #1d3148; font-size: 15px; }
+.disruption-source-card p { color: #5c6e7a; font-size: 10px; line-height: 1.45; }
+.disruption-source-card .disruption-country { margin: 0; color: #174f82; font-size: 9px; font-weight: 700; }
+.disruption-port-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: auto 0 11px; }
+.disruption-port-tags span { padding: 4px 6px; background: #f0f4f6; color: #385466; font-size: 8px; }
+.disruption-source-card a { align-self: flex-start; color: #174f82; font-size: 9px; font-weight: 800; text-decoration: none; }
+@media (max-width: 720px) { .port-disruption-workspace { padding: 12px; } .disruption-methodology { display: block; } .disruption-methodology strong { display: block; margin-bottom: 4px; } }
 .weather-empty-state { padding: 36px; color: var(--muted); background: #fff; text-align: center; }
 @media (max-width: 900px) {
   .weather-surface-header { align-items: stretch; flex-direction: column; padding: 16px; }

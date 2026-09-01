@@ -184,6 +184,7 @@ const state = {
   coastalWeatherQuery: "",
   coastalWeatherLoading: false,
   coastalWeatherPendingReload: false,
+  portDisruptions: null,
   weatherPortTierCache: new Map(),
   riverLayer: null,
   riverRows: [],
@@ -1727,7 +1728,7 @@ function focusCoastalWeatherSource() {
 }
 
 function setCoastalWeatherView(view) {
-  if (!new Set(["map", "table", "cards"]).has(view)) view = "map";
+  if (!new Set(["map", "table", "cards", "disruptions"]).has(view)) view = "map";
   state.coastalWeatherView = view;
   document.querySelectorAll("[data-weather-view]").forEach(button => {
     button.classList.toggle("active", button.dataset.weatherView === view);
@@ -1742,8 +1743,47 @@ function setCoastalWeatherView(view) {
   }
   document.getElementById("weather-workspace-table").hidden = view !== "table";
   document.getElementById("weather-workspace-cards").hidden = view !== "cards";
-  if (showSurface) renderWeatherWorkspace();
+  document.getElementById("port-disruption-workspace").hidden = view !== "disruptions";
+  if (view === "disruptions") loadPortDisruptions();
+  else if (showSurface) renderWeatherWorkspace();
   else if (view === "map") setTimeout(() => state.map.invalidateSize(), 0);
+}
+
+async function loadPortDisruptions() {
+  const workspace = document.getElementById("port-disruption-workspace");
+  if (!workspace) return;
+  if (!state.portDisruptions) {
+    workspace.innerHTML = `<div class="weather-empty-state">Loading verified disruption sources…</div>`;
+    try {
+      const response = await fetch("/api/port-disruptions");
+      if (!response.ok) throw new Error("Source registry is unavailable");
+      state.portDisruptions = await response.json();
+    } catch (error) {
+      workspace.innerHTML = `<div class="weather-empty-state">${escapeHtml(error.message)}</div>`;
+      return;
+    }
+  }
+  renderPortDisruptions();
+}
+
+function renderPortDisruptions() {
+  const workspace = document.getElementById("port-disruption-workspace");
+  const data = state.portDisruptions;
+  if (!workspace || !data) return;
+  const active = Array.isArray(data.active_notices) ? data.active_notices : [];
+  document.getElementById("weather-surface-subtitle").textContent =
+    `Key China and Southeast Asian ports · ${active.length} verified active notices`;
+  document.getElementById("weather-workspace-count").textContent =
+    `${data.source_count || 0} monitored sources`;
+  workspace.innerHTML = `
+    <section class="disruption-methodology"><strong>Verified operating status only</strong><span>${escapeHtml(data.methodology || "")}</span></section>
+    ${active.length ? `<section class="disruption-active-grid">${active.map(notice => `<article class="disruption-active-card"><b>${escapeHtml(notice.port_name)}</b><span>${escapeHtml(notice.status)}</span><p>${escapeHtml(notice.summary || "")}</p></article>`).join("")}</section>` : `<section class="disruption-empty"><h2>No verified active port-disruption notices in the connected registry</h2><p>${escapeHtml(data.disclaimer || "")}</p></section>`}
+    <section class="disruption-source-grid">${(data.sources || []).map(source => `<article class="disruption-source-card">
+      <header><span>${escapeHtml(source.region)}</span><b>${escapeHtml(source.evidence_type)}</b></header>
+      <h2>${escapeHtml(source.authority)}</h2><p class="disruption-country">${escapeHtml(source.country)} · ${escapeHtml(source.feed_kind)}</p>
+      <p>${escapeHtml(source.coverage)}</p><div class="disruption-port-tags">${(source.ports || []).map(port => `<span>${escapeHtml(port)}</span>`).join("")}</div>
+      <a href="${escapeAttr(source.url)}" target="_blank" rel="noopener">Open source</a>
+    </article>`).join("")}</section>`;
 }
 
 function updateCoastalWeatherDownload() {

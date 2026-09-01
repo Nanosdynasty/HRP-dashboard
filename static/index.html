@@ -410,6 +410,7 @@
               <button type="button" class="active" data-weather-view="map">Map</button>
               <button type="button" data-weather-view="table">Table</button>
               <button type="button" data-weather-view="cards">Cards</button>
+              <button type="button" data-weather-view="disruptions">Port disruptions</button>
             </div>
             <label class="weather-field" for="coastal-weather-location-type">
               <span>Forecast coverage</span>
@@ -464,6 +465,7 @@
               <button type="button" id="coastal-weather-refresh" class="secondary-button">Refresh now</button>
               <a id="coastal-weather-download" class="secondary-button" href="/api/imd/coastal-weather/export.csv">Download CSV</a>
               <a id="coastal-weather-port-report" class="secondary-button" href="/api/coastal-weather/port-report.xlsx?source=all">Port report Excel</a>
+              <a id="port-disruptions-download" class="secondary-button" href="/api/port-disruptions/export.csv">Disruption sources CSV</a>
             </div>
             <div id="coastal-weather-status" class="weather-status">
               Layer is switched off.
@@ -589,6 +591,7 @@
         </header>
         <div id="weather-workspace-table" class="weather-workspace-table"></div>
         <div id="weather-workspace-cards" class="weather-workspace-cards" hidden></div>
+        <div id="port-disruption-workspace" class="port-disruption-workspace" hidden></div>
       </section>
       <section id="river-data-surface" class="river-data-surface" hidden>
         <header class="river-surface-header">
@@ -999,6 +1002,6 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/js/app.js?v=20260901-river-click-1"></script>
+  <script src="/static/js/app.js?v=20260901-port-disruptions-1"></script>
 </body>
 </html>

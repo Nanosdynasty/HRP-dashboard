@@ -29,6 +29,7 @@ from coastal_weather_schema import (
     COASTAL_WEATHER_SOURCE_CATALOG,
     normalize_coastal_weather_rows,
 )
+from port_disruptions import port_disruption_payload
 from river_levels import RiverLevelManager, SOURCE_CATALOG, export_rows_csv, export_river_levels_xlsx
 from data_hub import create_data_hub_router
 
@@ -5035,6 +5036,32 @@ async def coastal_weather_sources():
             "restriction status is shown only when separately reported by a port or maritime authority."
         ),
     }
+
+
+@app.get("/api/port-disruptions")
+async def port_disruptions():
+    """Official / attributable operating-notice source registry for key ports."""
+    return port_disruption_payload()
+
+
+@app.get("/api/port-disruptions/export.csv")
+async def export_port_disruptions_csv():
+    """Export the source watchlist and any verified active notices, never inferred risks."""
+    payload = port_disruption_payload()
+    buffer = io.StringIO()
+    fields = ["record_type", "country", "region", "authority", "evidence_type", "feed_kind", "ports", "coverage", "url"]
+    writer = csv.DictWriter(buffer, fieldnames=fields)
+    writer.writeheader()
+    for source in payload["sources"]:
+        writer.writerow({
+            "record_type": "source_watchlist", "country": source["country"], "region": source["region"],
+            "authority": source["authority"], "evidence_type": source["evidence_type"],
+            "feed_kind": source["feed_kind"], "ports": "; ".join(source["ports"]),
+            "coverage": source["coverage"], "url": source["url"],
+        })
+    return StreamingResponse(iter([buffer.getvalue()]), media_type="text/csv", headers={
+        "Content-Disposition": 'attachment; filename="port_disruption_source_watchlist.csv"'
+    })
 
 
 def _river_source_inventory(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
