@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Howe Robinson | Global Assets Map</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="/static/css/style.css?v=20260901-chart-switcher-2" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260902-news-intelligence-1" />
 </head>
 <body>
   <div class="app-shell">
@@ -16,7 +16,7 @@
       </header>
 
       <div class="panel-scroll">
-        <details class="filter-section" data-mode="energy">
+        <details class="filter-section" data-mode="energy" hidden>
           <summary>
             <span><i class="section-icon energy-icon"></i>Energy</span>
             <span class="section-count" id="energy-active-count">0 active</span>
@@ -188,7 +188,7 @@
           </div>
         </details>
 
-        <details class="filter-section" data-mode="commodities">
+        <details class="filter-section" data-mode="commodities" hidden>
           <summary>
             <span><i class="section-icon commodity-icon"></i>Commodities</span>
             <span class="section-count" id="commodity-active-count">0 active</span>
@@ -266,7 +266,31 @@
           </div>
         </details>
 
-        <details class="filter-section datahub-section" data-mode="datahub">
+        <details class="filter-section news-section" data-mode="news">
+          <summary>
+            <span><i class="section-icon news-icon"></i>News intelligence</span>
+            <span class="section-count" id="news-sidebar-status">Connect feed</span>
+          </summary>
+          <div class="section-body">
+            <p class="workspace-intro">Curated market-moving headlines for dry bulk, ports, commodity supply and weather risk.</p>
+            <div class="field">
+              <label for="news-sidebar-topic">Focus</label>
+              <select id="news-sidebar-topic">
+                <option value="all">All project topics</option>
+                <option value="coal">Coal &amp; power</option>
+                <option value="dry_bulk">Dry bulk freight</option>
+                <option value="ports">Ports &amp; logistics</option>
+                <option value="iron_steel">Iron ore &amp; steel</option>
+                <option value="weather">Weather risk</option>
+                <option value="energy">Energy transition</option>
+              </select>
+            </div>
+            <button type="button" class="filter-button" id="news-open-workspace">Open news workspace</button>
+            <p class="source-note">Provider feed is filtered on the server; article links always open at the originating publisher.</p>
+          </div>
+        </details>
+
+        <details class="filter-section datahub-section" data-mode="datahub" hidden>
           <summary>
             <span><i class="section-icon datahub-icon"></i>Data Hub</span>
             <span class="section-count" id="datahub-sidebar-status">Master store</span>
@@ -612,6 +636,30 @@
           <summary>Source directory, lineage and planned connectors</summary>
           <div id="river-source-list" class="river-source-list"></div>
         </details>
+      </section>
+      <section id="news-surface" class="news-surface" hidden>
+        <header class="news-surface-header">
+          <div>
+            <span>MARKET NEWS / CURATED SIGNALS</span>
+            <h1>News intelligence</h1>
+            <p id="news-subtitle">Focused headlines relevant to commodity, freight and port-market research.</p>
+          </div>
+          <div class="news-surface-actions">
+            <label>Search<input id="news-search" type="search" placeholder="Search loaded headlines" /></label>
+            <button type="button" id="news-refresh">Refresh feed</button>
+          </div>
+        </header>
+        <nav id="news-topic-tabs" class="news-topic-tabs" aria-label="News topic filters">
+          <button type="button" class="active" data-news-topic="all">All signals</button>
+          <button type="button" data-news-topic="coal">Coal &amp; power</button>
+          <button type="button" data-news-topic="dry_bulk">Dry bulk freight</button>
+          <button type="button" data-news-topic="ports">Ports &amp; logistics</button>
+          <button type="button" data-news-topic="iron_steel">Iron ore &amp; steel</button>
+          <button type="button" data-news-topic="weather">Weather risk</button>
+          <button type="button" data-news-topic="energy">Energy transition</button>
+        </nav>
+        <div id="news-metrics" class="news-metrics"></div>
+        <div id="news-feed" class="news-feed"></div>
       </section>
       <header id="coal-workspace-header" class="coal-workspace-header" hidden>
         <div>
@@ -1002,6 +1050,6 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/js/app.js?v=20260901-port-disruptions-2"></script>
+  <script src="/static/js/app.js?v=20260902-news-intelligence-1"></script>
 </body>
 </html>

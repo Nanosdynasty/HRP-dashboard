@@ -32,6 +32,7 @@ from coastal_weather_schema import (
 from port_disruptions import port_disruption_payload
 from river_levels import RiverLevelManager, SOURCE_CATALOG, export_rows_csv, export_river_levels_xlsx
 from data_hub import create_data_hub_router
+from news_intelligence import NewsIntelligenceManager
 
 log = logging.getLogger("ais")
 logging.basicConfig(level=logging.INFO)
@@ -146,6 +147,9 @@ GLOBAL_CYCLONE_CACHE_DIR = UPLOAD_DIR / "_global_cyclones"
 GLOBAL_CYCLONE_CACHE_PATH = GLOBAL_CYCLONE_CACHE_DIR / "latest.json"
 RIVER_LEVEL_CACHE_DIR = UPLOAD_DIR / "_river_levels"
 RIVER_LEVEL_CACHE_PATH = RIVER_LEVEL_CACHE_DIR / "latest.json"
+NEWS_CACHE_DIR = UPLOAD_DIR / "_news_intelligence"
+NEWS_CACHE_PATH = NEWS_CACHE_DIR / "latest.json"
+NEWS_CACHE_TTL_SECONDS = int(os.getenv("NEWS_CACHE_TTL_SECONDS", "1800"))
 
 
 def _init_ais_trail_db() -> None:
@@ -4306,6 +4310,9 @@ global_cyclone_manager = GlobalCycloneManager(
     GLOBAL_CYCLONE_CACHE_PATH, ports.ports
 )
 river_level_manager = RiverLevelManager(RIVER_LEVEL_CACHE_PATH)
+news_intelligence_manager = NewsIntelligenceManager(
+    NEWS_CACHE_PATH, NEWS_CACHE_TTL_SECONDS
+)
 
 
 @app.on_event("startup")
@@ -4353,6 +4360,13 @@ async def start_global_cyclone_collection():
 async def start_river_level_collection():
     """Refresh official navigable-waterway gauges without delaying startup."""
     river_level_manager.start()
+
+
+@app.on_event("startup")
+async def start_news_intelligence_collection():
+    """Warm the focused news cache only when a NewsData credential is configured."""
+    if news_intelligence_manager.configured:
+        asyncio.create_task(news_intelligence_manager.refresh())
 
 
 @app.on_event("shutdown")
@@ -5178,6 +5192,27 @@ async def river_level_sources():
     rows = list(river_level_manager.payload.get("rows", []))
     sources = _river_source_inventory(rows)
     return {"sources": sources, "count": len(sources)}
+
+
+@app.get("/api/news")
+async def market_news(
+    topic: str = Query("all", pattern="^(all|coal|dry_bulk|ports|iron_steel|weather|energy)$"),
+    q: str = Query("", max_length=100),
+):
+    """Return cached, English, project-relevant NewsData articles.
+
+    The provider credential remains server-side; the browser receives only
+    source article metadata and never the provider request URL or API key.
+    """
+    if not news_intelligence_manager.payload and news_intelligence_manager.configured:
+        await news_intelligence_manager.refresh()
+    return news_intelligence_manager.response(topic=topic, query=q.strip())
+
+
+@app.post("/api/news/refresh")
+async def refresh_market_news():
+    """Refresh the shared feed, throttled by the provider-cache policy."""
+    return await news_intelligence_manager.refresh(force=True)
 
 
 @app.get("/api/river-levels/export.csv")

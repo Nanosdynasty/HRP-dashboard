@@ -2059,6 +2059,79 @@ section[data-gtt-panel="overview"] > .gtt-kpis { order:2; margin-top:11px; }
 .river-sparkline-empty { margin: 4px 0 12px; padding: 12px; background: #f4f6f7; border: 1px dashed #ccd6db; text-align: center; }
 .river-key { background: #1976a3; }
 
+/* Market news workspace: a compact, source-first editorial scan for research. */
+.news-icon { background: #c44343; }
+.news-section[open] { border-left-color: #c44343; }
+.news-surface {
+  position: absolute; inset: 0; z-index: 620; overflow: auto;
+  color: var(--hrp-navy); background: #f3f6f8;
+}
+.news-surface-header {
+  position: sticky; top: 0; z-index: 4; display: flex; align-items: end;
+  justify-content: space-between; gap: 24px; padding: 22px 28px 18px;
+  border-bottom: 1px solid #d9e1e5; background: rgba(255,255,255,.97);
+  backdrop-filter: blur(8px);
+}
+.news-surface-header span { color: #c44343; font-size: 9px; font-weight: 800; letter-spacing: .13em; }
+.news-surface-header h1 { margin: 3px 0 2px; font-size: 23px; }
+.news-surface-header p { margin: 0; color: var(--muted); font-size: 10px; }
+.news-surface-actions { display: flex; align-items: end; gap: 9px; }
+.news-surface-actions label { display: grid; gap: 4px; color: var(--muted); font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.news-surface-actions input { width: 230px; height: 34px; padding: 0 10px; border: 1px solid #cfd9de; background: #fff; }
+.news-surface-actions button { height: 34px; padding: 0 13px; color: #fff; background: var(--hrp-navy); border: 1px solid var(--hrp-navy); font: inherit; font-size: 9px; font-weight: 800; cursor: pointer; }
+.news-topic-tabs { display: flex; gap: 6px; padding: 15px 28px 0; overflow-x: auto; }
+.news-topic-tabs button { flex: 0 0 auto; padding: 8px 11px; color: #52616e; background: #fff; border: 1px solid #d5dee4; border-radius: 16px; font: inherit; font-size: 8px; font-weight: 800; cursor: pointer; }
+.news-topic-tabs button.active { color: #fff; background: var(--hrp-navy); border-color: var(--hrp-navy); }
+.news-metrics { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 10px; padding: 15px 28px 0; }
+.news-metrics article { min-height: 72px; padding: 12px 14px; border-top: 3px solid var(--hrp-blue); background: #fff; box-shadow: 0 3px 14px rgba(23,50,68,.07); }
+.news-metrics article:nth-child(2) { border-top-color: #c44343; }
+.news-metrics article:nth-child(3) { border-top-color: #267a83; }
+.news-metrics article:nth-child(4) { border-top-color: #b07c19; }
+.news-metrics span, .news-metrics strong, .news-metrics small { display: block; }
+.news-metrics span { color: #71808c; font-size: 7px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.news-metrics strong { margin: 5px 0 3px; color: var(--hrp-navy); font-size: 18px; }
+.news-metrics small { color: #75838d; font-size: 8px; }
+.news-feed { display: grid; grid-template-columns: minmax(330px, 1.3fr) minmax(290px, .7fr); gap: 14px; padding: 15px 28px 30px; }
+.news-lead, .news-list, .news-empty { border: 1px solid #dce3e8; background: #fff; box-shadow: 0 5px 18px rgba(23,39,65,.06); }
+.news-lead { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(180px, .9fr); min-height: 260px; overflow: hidden; }
+.news-lead-copy { display: flex; flex-direction: column; padding: 22px; }
+.news-kicker, .news-meta { color: #63727d; font-size: 8px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.news-kicker { color: #c44343; }
+.news-lead h2 { margin: 10px 0 8px; color: var(--hrp-navy); font-size: 22px; line-height: 1.16; }
+.news-lead p { margin: 0; color: #52626f; font-size: 10px; line-height: 1.55; }
+.news-link { display: inline-flex; align-items: center; gap: 5px; width: fit-content; margin-top: auto; padding-top: 18px; color: var(--hrp-blue); font-size: 9px; font-weight: 800; text-decoration: none; }
+.news-link::after { content: '↗'; font-size: 12px; }
+.news-image { min-height: 200px; background: linear-gradient(135deg, #263e5c, #6e8297); }
+.news-image img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.news-list { display: grid; align-content: start; }
+.news-list > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #e3e8eb; }
+.news-list > header strong { font-size: 12px; }
+.news-list > header span { color: #77858f; font-size: 8px; }
+.news-row { display: grid; gap: 5px; padding: 13px 16px; border-bottom: 1px solid #e7ecef; }
+.news-row:last-child { border-bottom: 0; }
+.news-row h3 { margin: 0; color: var(--hrp-navy); font-size: 11px; line-height: 1.35; }
+.news-row a { color: inherit; text-decoration: none; }
+.news-row a:hover h3 { color: var(--hrp-blue); }
+.news-row-meta { display: flex; flex-wrap: wrap; gap: 5px 8px; color: #75838e; font-size: 8px; }
+.news-tag { padding: 3px 5px; color: #245279; background: #eaf2f7; font-size: 7px; font-weight: 800; text-transform: uppercase; }
+.news-tag.weather { color: #8b5b14; background: #fff3d8; }
+.news-tag.coal { color: #7b3d3d; background: #f9eaea; }
+.news-empty { grid-column: 1 / -1; padding: 45px 24px; color: #64737e; text-align: center; }
+.news-empty strong, .news-empty span { display: block; }
+.news-empty strong { color: var(--hrp-navy); font-size: 15px; }
+.news-empty span { margin-top: 7px; font-size: 10px; }
+
+@media (max-width: 900px) {
+  .news-surface-header { align-items: stretch; flex-direction: column; padding: 16px; }
+  .news-surface-actions { align-items: stretch; flex-direction: column; }
+  .news-surface-actions input { width: 100%; }
+  .news-topic-tabs { padding: 12px 16px 0; }
+  .news-metrics { grid-template-columns: 1fr 1fr; padding: 12px 16px 0; }
+  .news-feed { grid-template-columns: 1fr; padding: 12px 16px 22px; }
+  .news-lead { grid-template-columns: 1fr; }
+  .news-image { min-height: 180px; order: -1; }
+}
+
 @media (max-width: 900px) {
   .river-surface-header { align-items: stretch; flex-direction: column; padding: 16px; }
   .river-surface-actions { align-items: stretch; flex-direction: column; }

@@ -194,6 +194,10 @@ const state = {
   riverView: "map",
   riverQuery: "",
   riverLoading: false,
+  newsPayload: null,
+  newsTopic: "all",
+  newsQuery: "",
+  newsLoading: false,
   coalAssets: [],
   coalSummary: null,
   coalAnalysis: null,
@@ -457,6 +461,24 @@ function bindControls() {
     renderRiverWorkspace();
   });
   document.getElementById("river-level-refresh").addEventListener("click", () => loadRiverLevels(true));
+  document.getElementById("news-open-workspace").addEventListener("click", () => {
+    state.newsTopic = document.getElementById("news-sidebar-topic").value;
+    activateMode("news");
+  });
+  document.getElementById("news-sidebar-topic").addEventListener("change", event => {
+    state.newsTopic = event.target.value;
+    if (state.mode === "news") loadNews();
+  });
+  document.querySelectorAll("[data-news-topic]").forEach(button => button.addEventListener("click", () => {
+    state.newsTopic = button.dataset.newsTopic;
+    document.getElementById("news-sidebar-topic").value = state.newsTopic;
+    loadNews();
+  }));
+  document.getElementById("news-search").addEventListener("input", event => {
+    state.newsQuery = event.target.value.trim();
+    renderNewsWorkspace();
+  });
+  document.getElementById("news-refresh").addEventListener("click", () => loadNews(true));
   document.querySelectorAll("#coal-workspace-layers input, #coal-consumer-layers input").forEach(input => {
     input.addEventListener("change", renderCoalLayers);
   });
@@ -598,6 +620,7 @@ function activateMode(mode) {
   const dataHubOnly = mode === "datahub";
   const gttOnly = mode === "gtt";
   const riverOnly = mode === "rivers";
+  const newsOnly = mode === "news";
   if (!riverOnly && state.riverLayer && state.map.hasLayer(state.riverLayer)) {
     state.map.removeLayer(state.riverLayer);
   }
@@ -605,7 +628,7 @@ function activateMode(mode) {
   [state.aisLayer, state.aisTrailLayer, state.routeLayer].forEach(layer => {
     if (layer && state.map.hasLayer(layer)) state.map.removeLayer(layer);
   });
-  if (!coalOnly && !dataHubOnly && !gttOnly && state.aisEnabled) {
+  if (!coalOnly && !dataHubOnly && !gttOnly && !newsOnly && state.aisEnabled) {
     state.aisLayer.addTo(state.map);
     state.aisTrailLayer.addTo(state.map);
     renderAisVessels();
@@ -621,6 +644,7 @@ function activateMode(mode) {
   coalHeader.hidden = mode !== "coal";
   document.getElementById("weather-data-surface").hidden = true;
   document.getElementById("river-data-surface").hidden = true;
+  document.getElementById("news-surface").hidden = !newsOnly;
   document.getElementById("datahub-surface").hidden = !dataHubOnly;
   document.getElementById("gtt-surface").hidden = !gttOnly;
   if (mode === "coal") {
@@ -628,7 +652,7 @@ function activateMode(mode) {
     setCoalView(state.coalView);
     renderCoalLayers();
     state.map.fitBounds([[6, 68], [37, 98]], { padding: [25, 25] });
-  } else if (dataHubOnly || gttOnly) {
+  } else if (dataHubOnly || gttOnly || newsOnly) {
     state.coalLayer.clearLayers();
     document.getElementById("coal-data-surface").hidden = true;
     document.getElementById("npp-power-surface").hidden = true;
@@ -637,10 +661,12 @@ function activateMode(mode) {
     document.querySelector(".map-key").hidden = true;
     loadDataHubSummary();
     if (gttOnly) setGttTab(state.gttTab);
+    if (newsOnly) loadNews();
   } else {
     state.coalLayer.clearLayers();
     document.getElementById("datahub-surface").hidden = true;
     document.getElementById("gtt-surface").hidden = true;
+    document.getElementById("news-surface").hidden = true;
     document.getElementById("coal-data-surface").hidden = true;
     document.getElementById("npp-power-surface").hidden = true;
     document.getElementById("map").hidden = false;
@@ -659,6 +685,100 @@ function activateMode(mode) {
   }
   renderPorts();
   updateActiveCounts();
+}
+
+async function loadNews(force = false) {
+  if (state.newsLoading) return;
+  state.newsLoading = true;
+  const feed = document.getElementById("news-feed");
+  if (feed && !state.newsPayload) {
+    feed.innerHTML = `<div class="news-empty"><strong>Loading market news…</strong><span>Filtering current provider headlines for project-relevant coverage.</span></div>`;
+  }
+  try {
+    const response = force
+      ? await fetch("/api/news/refresh", { method: "POST" })
+      : await fetch(`/api/news?topic=${encodeURIComponent(state.newsTopic)}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || "News feed is unavailable");
+    state.newsPayload = payload;
+    renderNewsWorkspace();
+  } catch (error) {
+    state.newsPayload = { configured: false, rows: [], last_error: error.message, total: 0 };
+    renderNewsWorkspace();
+  } finally {
+    state.newsLoading = false;
+  }
+}
+
+function newsPublishedLabel(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Publication time unavailable";
+  const hours = Math.max(0, Math.round((Date.now() - date.getTime()) / 3600000));
+  if (hours < 1) return "Published just now";
+  if (hours < 24) return `Published ${hours}h ago`;
+  return `Published ${Math.floor(hours / 24)}d ago`;
+}
+
+function newsTopicLabel(topic) {
+  const labels = {
+    coal: "Coal", dry_bulk: "Dry bulk", ports: "Ports", iron_steel: "Iron & steel",
+    weather: "Weather", energy: "Energy"
+  };
+  return labels[topic] || labelize(topic);
+}
+
+function renderNewsWorkspace() {
+  const payload = state.newsPayload || {};
+  const sidebarStatus = document.getElementById("news-sidebar-status");
+  const subtitle = document.getElementById("news-subtitle");
+  const metrics = document.getElementById("news-metrics");
+  const feed = document.getElementById("news-feed");
+  const topic = state.newsTopic || "all";
+  const query = state.newsQuery.toLowerCase();
+  const rows = (payload.rows || []).filter(row => {
+    if (topic !== "all" && !(row.topics || []).includes(topic)) return false;
+    if (!query) return true;
+    return [row.title, row.description, row.source_name, ...(row.topics || [])]
+      .join(" ").toLowerCase().includes(query);
+  });
+  document.querySelectorAll("[data-news-topic]").forEach(button => {
+    button.classList.toggle("active", button.dataset.newsTopic === topic);
+  });
+  if (!payload.configured) {
+    sidebarStatus.textContent = "Key required";
+    subtitle.textContent = "A server-side NewsData credential is required before the curated feed can load.";
+    metrics.innerHTML = "";
+    feed.innerHTML = `<div class="news-empty"><strong>News feed not connected</strong><span>${escapeHtml(payload.last_error || "Set NEWS_DATA_API_KEY in the hosting environment. The key is never exposed to browsers.")}</span></div>`;
+    return;
+  }
+  sidebarStatus.textContent = payload.fresh ? `${Number(payload.total || 0)} headlines` : "Refreshing";
+  const fetched = payload.fetched_at ? newsPublishedLabel(payload.fetched_at).replace("Published ", "Updated ") : "Updating";
+  subtitle.textContent = `${Number(payload.total || 0)} current, filtered headlines · ${fetched} · NewsData.io`;
+  const topicCounts = (payload.rows || []).reduce((counts, row) => {
+    (row.topics || []).forEach(item => { counts[item] = (counts[item] || 0) + 1; });
+    return counts;
+  }, {});
+  metrics.innerHTML = `<article><span>Headlines returned</span><strong>${rows.length}</strong><small>Within the current research scope</small></article>
+    <article><span>Coal & power</span><strong>${topicCounts.coal || 0}</strong><small>Supply, demand and policy coverage</small></article>
+    <article><span>Ports & freight</span><strong>${(topicCounts.ports || 0) + (topicCounts.dry_bulk || 0)}</strong><small>Logistics and dry-bulk signals</small></article>
+    <article><span>Weather risk</span><strong>${topicCounts.weather || 0}</strong><small>Storm and disruption-relevant items</small></article>`;
+  if (!rows.length) {
+    feed.innerHTML = `<div class="news-empty"><strong>No matching headlines</strong><span>Try another topic or clear the headline search. The provider feed is deliberately limited to project-relevant news.</span></div>`;
+    return;
+  }
+  const lead = rows[0];
+  const tags = (lead.topics || []).slice(0, 2).map(item => `<span class="news-tag ${escapeAttr(item)}">${escapeHtml(newsTopicLabel(item))}</span>`).join("");
+  const image = lead.image_url
+    ? `<img src="${escapeAttr(lead.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`
+    : "";
+  const leadLink = lead.link ? `<a class="news-link" href="${escapeAttr(lead.link)}" target="_blank" rel="noopener noreferrer">Read original coverage</a>` : "";
+  const rest = rows.slice(1, 9);
+  feed.innerHTML = `<article class="news-lead"><div class="news-lead-copy"><span class="news-kicker">LEAD SIGNAL</span><div class="news-row-meta"><span>${escapeHtml(lead.source_name || "News source")}</span><span>${escapeHtml(newsPublishedLabel(lead.published_at))}</span>${tags}</div><h2>${escapeHtml(lead.title)}</h2><p>${escapeHtml(lead.description || "Open the original publisher link for the full report.")}</p>${leadLink}</div><div class="news-image">${image}</div></article>
+    <section class="news-list"><header><strong>Latest signals</strong><span>${rows.length - 1} more in view</span></header>${rest.map(row => {
+      const articleTags = (row.topics || []).slice(0, 2).map(item => `<span class="news-tag ${escapeAttr(item)}">${escapeHtml(newsTopicLabel(item))}</span>`).join("");
+      const title = escapeHtml(row.title || "Untitled article");
+      return `<article class="news-row"><div class="news-row-meta"><span>${escapeHtml(row.source_name || "News source")}</span><span>${escapeHtml(newsPublishedLabel(row.published_at))}</span>${articleTags}</div>${row.link ? `<a href="${escapeAttr(row.link)}" target="_blank" rel="noopener noreferrer"><h3>${title}</h3></a>` : `<h3>${title}</h3>`}</article>`;
+    }).join("")}</section>`;
 }
 
 const DATA_HUB_PROVIDER_LABELS = {
