@@ -36,6 +36,9 @@ from news_intelligence import NewsIntelligenceManager
 
 log = logging.getLogger("ais")
 logging.basicConfig(level=logging.INFO)
+# HTTP client request URLs can contain service credentials in query strings.
+# Keep request-level logging out of hosted logs; application-level errors remain.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 BASE_DIR = Path(__file__).parent
 try:
