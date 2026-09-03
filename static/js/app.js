@@ -721,8 +721,8 @@ function newsPublishedLabel(value) {
 
 function newsTopicLabel(topic) {
   const labels = {
-    coal: "Coal", dry_bulk: "Dry bulk", ports: "Ports", iron_steel: "Iron & steel",
-    weather: "Weather", energy: "Energy"
+    chartering: "Chartering", dry_bulk: "Dry bulk", ports: "Ports", cargo_trade: "Cargo flow",
+    weather: "Weather"
   };
   return labels[topic] || labelize(topic);
 }
@@ -744,24 +744,18 @@ function renderNewsWorkspace() {
   document.querySelectorAll("[data-news-topic]").forEach(button => {
     button.classList.toggle("active", button.dataset.newsTopic === topic);
   });
-  if (!payload.configured) {
-    sidebarStatus.textContent = "Key required";
-    subtitle.textContent = "A server-side NewsData credential is required before the curated feed can load.";
-    metrics.innerHTML = "";
-    feed.innerHTML = `<div class="news-empty"><strong>News feed not connected</strong><span>${escapeHtml(payload.last_error || "Set NEWS_DATA_API_KEY in the hosting environment. The key is never exposed to browsers.")}</span></div>`;
-    return;
-  }
   sidebarStatus.textContent = payload.fresh ? `${Number(payload.total || 0)} headlines` : "Refreshing";
   const fetched = payload.fetched_at ? newsPublishedLabel(payload.fetched_at).replace("Published ", "Updated ") : "Updating";
-  subtitle.textContent = `${Number(payload.total || 0)} current, filtered headlines · ${fetched} · NewsData.io`;
+  const connectedProviders = (payload.providers || []).filter(provider => provider.connected).map(provider => provider.label);
+  subtitle.textContent = `${Number(payload.total || 0)} commercially screened headlines · ${fetched} · ${connectedProviders.join(", ") || "connecting sources"}`;
   const topicCounts = (payload.rows || []).reduce((counts, row) => {
     (row.topics || []).forEach(item => { counts[item] = (counts[item] || 0) + 1; });
     return counts;
   }, {});
   metrics.innerHTML = `<article><span>Headlines returned</span><strong>${rows.length}</strong><small>Within the current research scope</small></article>
-    <article><span>Coal & power</span><strong>${topicCounts.coal || 0}</strong><small>Supply, demand and policy coverage</small></article>
-    <article><span>Ports & freight</span><strong>${(topicCounts.ports || 0) + (topicCounts.dry_bulk || 0)}</strong><small>Logistics and dry-bulk signals</small></article>
-    <article><span>Weather risk</span><strong>${topicCounts.weather || 0}</strong><small>Storm and disruption-relevant items</small></article>`;
+    <article><span>Chartering & freight</span><strong>${topicCounts.chartering || 0}</strong><small>Fixtures, rates and vessel market signals</small></article>
+    <article><span>Ports & cargo flows</span><strong>${(topicCounts.ports || 0) + (topicCounts.cargo_trade || 0)}</strong><small>Operational and cargo movement impacts</small></article>
+    <article><span>Navigational weather</span><strong>${topicCounts.weather || 0}</strong><small>Weather with a port or vessel consequence</small></article>`;
   if (!rows.length) {
     feed.innerHTML = `<div class="news-empty"><strong>No matching headlines</strong><span>Try another topic or clear the headline search. The provider feed is deliberately limited to project-relevant news.</span></div>`;
     return;
@@ -773,11 +767,11 @@ function renderNewsWorkspace() {
     : "";
   const leadLink = lead.link ? `<a class="news-link" href="${escapeAttr(lead.link)}" target="_blank" rel="noopener noreferrer">Read original coverage</a>` : "";
   const rest = rows.slice(1, 9);
-  feed.innerHTML = `<article class="news-lead"><div class="news-lead-copy"><span class="news-kicker">LEAD SIGNAL</span><div class="news-row-meta"><span>${escapeHtml(lead.source_name || "News source")}</span><span>${escapeHtml(newsPublishedLabel(lead.published_at))}</span>${tags}</div><h2>${escapeHtml(lead.title)}</h2><p>${escapeHtml(lead.description || "Open the original publisher link for the full report.")}</p>${leadLink}</div><div class="news-image">${image}</div></article>
+  feed.innerHTML = `<article class="news-lead"><div class="news-lead-copy"><span class="news-kicker">${escapeHtml(lead.relevance_reason || "COMMERCIAL SIGNAL")}</span><div class="news-row-meta"><span>${escapeHtml(lead.source_name || "News source")}</span><span>${escapeHtml(lead.provider_name || "")}</span><span>${escapeHtml(newsPublishedLabel(lead.published_at))}</span>${tags}</div><h2>${escapeHtml(lead.title)}</h2><p>${escapeHtml(lead.description || "Open the original publisher link for the full report.")}</p>${leadLink}</div><div class="news-image">${image}</div></article>
     <section class="news-list"><header><strong>Latest signals</strong><span>${rows.length - 1} more in view</span></header>${rest.map(row => {
       const articleTags = (row.topics || []).slice(0, 2).map(item => `<span class="news-tag ${escapeAttr(item)}">${escapeHtml(newsTopicLabel(item))}</span>`).join("");
       const title = escapeHtml(row.title || "Untitled article");
-      return `<article class="news-row"><div class="news-row-meta"><span>${escapeHtml(row.source_name || "News source")}</span><span>${escapeHtml(newsPublishedLabel(row.published_at))}</span>${articleTags}</div>${row.link ? `<a href="${escapeAttr(row.link)}" target="_blank" rel="noopener noreferrer"><h3>${title}</h3></a>` : `<h3>${title}</h3>`}</article>`;
+      return `<article class="news-row"><div class="news-row-meta"><span>${escapeHtml(row.source_name || "News source")}</span><span>${escapeHtml(row.provider_name || "")}</span><span>${escapeHtml(newsPublishedLabel(row.published_at))}</span>${articleTags}</div><small>${escapeHtml(row.relevance_reason || "Commercial dry-bulk signal")}</small>${row.link ? `<a href="${escapeAttr(row.link)}" target="_blank" rel="noopener noreferrer"><h3>${title}</h3></a>` : `<h3>${title}</h3>`}</article>`;
     }).join("")}</section>`;
 }
 

@@ -272,17 +272,16 @@
             <span class="section-count" id="news-sidebar-status">Connect feed</span>
           </summary>
           <div class="section-body">
-            <p class="workspace-intro">Curated market-moving headlines for dry bulk, ports, commodity supply and weather risk.</p>
+            <p class="workspace-intro">Curated commercial signals for chartering, freight, dry-bulk vessels, port operations and navigational weather.</p>
             <div class="field">
               <label for="news-sidebar-topic">Focus</label>
               <select id="news-sidebar-topic">
-                <option value="all">All project topics</option>
-                <option value="coal">Coal &amp; power</option>
+                <option value="all">All commercial signals</option>
+                <option value="chartering">Chartering &amp; freight</option>
                 <option value="dry_bulk">Dry bulk freight</option>
-                <option value="ports">Ports &amp; logistics</option>
-                <option value="iron_steel">Iron ore &amp; steel</option>
-                <option value="weather">Weather risk</option>
-                <option value="energy">Energy transition</option>
+                <option value="ports">Ports &amp; operations</option>
+                <option value="cargo_trade">Bulk cargo flows</option>
+                <option value="weather">Navigational weather</option>
               </select>
             </div>
             <button type="button" class="filter-button" id="news-open-workspace">Open news workspace</button>
@@ -642,7 +641,7 @@
           <div>
             <span>MARKET NEWS / CURATED SIGNALS</span>
             <h1>News intelligence</h1>
-            <p id="news-subtitle">Focused headlines relevant to commodity, freight and port-market research.</p>
+            <p id="news-subtitle">Only commercial dry-bulk signals with a chartering, vessel, port-operational, cargo-flow or navigational-weather impact.</p>
           </div>
           <div class="news-surface-actions">
             <label>Search<input id="news-search" type="search" placeholder="Search loaded headlines" /></label>
@@ -651,12 +650,11 @@
         </header>
         <nav id="news-topic-tabs" class="news-topic-tabs" aria-label="News topic filters">
           <button type="button" class="active" data-news-topic="all">All signals</button>
-          <button type="button" data-news-topic="coal">Coal &amp; power</button>
+          <button type="button" data-news-topic="chartering">Chartering &amp; freight</button>
           <button type="button" data-news-topic="dry_bulk">Dry bulk freight</button>
-          <button type="button" data-news-topic="ports">Ports &amp; logistics</button>
-          <button type="button" data-news-topic="iron_steel">Iron ore &amp; steel</button>
-          <button type="button" data-news-topic="weather">Weather risk</button>
-          <button type="button" data-news-topic="energy">Energy transition</button>
+          <button type="button" data-news-topic="ports">Ports &amp; operations</button>
+          <button type="button" data-news-topic="cargo_trade">Bulk cargo flows</button>
+          <button type="button" data-news-topic="weather">Navigational weather</button>
         </nav>
         <div id="news-metrics" class="news-metrics"></div>
         <div id="news-feed" class="news-feed"></div>

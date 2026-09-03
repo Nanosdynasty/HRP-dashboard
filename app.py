@@ -4368,8 +4368,7 @@ async def start_river_level_collection():
 @app.on_event("startup")
 async def start_news_intelligence_collection():
     """Warm the focused news cache only when a NewsData credential is configured."""
-    if news_intelligence_manager.configured:
-        asyncio.create_task(news_intelligence_manager.refresh())
+    asyncio.create_task(news_intelligence_manager.refresh())
 
 
 @app.on_event("shutdown")
@@ -5199,15 +5198,15 @@ async def river_level_sources():
 
 @app.get("/api/news")
 async def market_news(
-    topic: str = Query("all", pattern="^(all|coal|dry_bulk|ports|iron_steel|weather|energy)$"),
+    topic: str = Query("all", pattern="^(all|chartering|dry_bulk|ports|cargo_trade|weather)$"),
     q: str = Query("", max_length=100),
 ):
-    """Return cached, English, project-relevant NewsData articles.
+    """Return cached, English, commercially relevant dry-bulk articles.
 
     The provider credential remains server-side; the browser receives only
     source article metadata and never the provider request URL or API key.
     """
-    if not news_intelligence_manager.payload and news_intelligence_manager.configured:
+    if not news_intelligence_manager.payload:
         await news_intelligence_manager.refresh()
     return news_intelligence_manager.response(topic=topic, query=q.strip())
 
