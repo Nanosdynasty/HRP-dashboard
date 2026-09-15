@@ -144,6 +144,7 @@ IMD_COASTAL_CACHE_DIR = UPLOAD_DIR / "_imd_coastal_weather"
 IMD_COASTAL_CACHE_PATH = IMD_COASTAL_CACHE_DIR / "latest.json"
 BMKG_MARINE_CACHE_DIR = UPLOAD_DIR / "_bmkg_marine_weather"
 BMKG_MARINE_CACHE_PATH = BMKG_MARINE_CACHE_DIR / "latest.json"
+BMKG_MARINE_SEED_PATH = BASE_DIR / "data" / "bmkg_marine_weather_seed.json"
 SEA_MARINE_CACHE_DIR = UPLOAD_DIR / "_sea_marine_weather"
 SEA_MARINE_CACHE_PATH = SEA_MARINE_CACHE_DIR / "latest.json"
 MAJOR_PORT_WEATHER_CACHE_DIR = UPLOAD_DIR / "_major_port_weather"
@@ -4316,7 +4317,8 @@ imd_coastal_weather_manager = ImdCoastalWeatherManager(
     IMD_COASTAL_CACHE_PATH
 )
 bmkg_marine_weather_manager = BmkgMarineWeatherManager(
-    BMKG_MARINE_CACHE_PATH
+    BMKG_MARINE_CACHE_PATH,
+    seed_path=BMKG_MARINE_SEED_PATH,
 )
 sea_marine_weather_manager = SeaMarineWeatherManager(SEA_MARINE_CACHE_PATH)
 major_port_weather_manager = MajorPortWeatherManager(MAJOR_PORT_WEATHER_CACHE_PATH)

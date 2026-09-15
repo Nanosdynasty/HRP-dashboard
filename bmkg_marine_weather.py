@@ -318,9 +318,13 @@ def select_forecast_rows(
 
 
 class BmkgMarineWeatherManager:
-    def __init__(self, cache_path: Path, refresh_seconds: int = REFRESH_SECONDS):
+    def __init__(
+        self, cache_path: Path, refresh_seconds: int = REFRESH_SECONDS,
+        seed_path: Optional[Path] = None,
+    ):
         self.cache_path = cache_path
         self.refresh_seconds = refresh_seconds
+        self.seed_path = seed_path
         self.payload: Dict[str, Any] = {}
         self.last_error: Optional[str] = None
         self.task: Optional[asyncio.Task] = None
@@ -328,15 +332,21 @@ class BmkgMarineWeatherManager:
         self.stopping = False
         self._load_cache()
 
+    def _read_payload(self, path: Path) -> Dict[str, Any]:
+        payload = _json_safe(json.loads(path.read_text(encoding="utf-8")))
+        return payload if payload.get("schema_version") == SCHEMA_VERSION else {}
+
     def _load_cache(self) -> None:
-        try:
-            self.payload = _json_safe(
-                json.loads(self.cache_path.read_text(encoding="utf-8"))
-            )
-            if self.payload.get("schema_version") != SCHEMA_VERSION:
-                self.payload = {}
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            self.payload = {}
+        for path in (self.cache_path, self.seed_path):
+            if path is None:
+                continue
+            try:
+                self.payload = self._read_payload(path)
+                if self.payload:
+                    return
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                pass
+        self.payload = {}
 
     @staticmethod
     def _files(payload: Dict[str, Any]) -> List[Dict[str, Any]]:

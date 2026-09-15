@@ -59,6 +59,16 @@ class BmkgRefreshRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(manager.selected_payload()['stale'])
             self.assertGreater(manager.selected_payload()['refresh_age_hours'], 3)
 
+    def test_seed_cache_is_loaded_when_runtime_cache_is_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            seed = Path(directory) / 'seed.json'
+            seed.write_text(
+                '{"schema_version":3,"fetched_at":"2026-08-04T00:00:00+00:00","rows":[{"location_id":"bmkg-port-1"}]}',
+                encoding='utf-8',
+            )
+            manager = BmkgMarineWeatherManager(Path(directory) / 'cache.json', seed_path=seed)
+            self.assertEqual(manager.payload['rows'][0]['location_id'], 'bmkg-port-1')
+
 
 class BmkgMarineWeatherNormalizationTests(unittest.TestCase):
     def test_normalizes_rich_port_forecast(self):
