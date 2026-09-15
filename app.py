@@ -33,6 +33,7 @@ from port_disruptions import port_disruption_payload
 from river_levels import RiverLevelManager, SOURCE_CATALOG, export_rows_csv, export_river_levels_xlsx
 from data_hub import create_data_hub_router
 from news_intelligence import NewsIntelligenceManager
+from india_source_monitor import IndiaSourceMonitor
 
 log = logging.getLogger("ais")
 logging.basicConfig(level=logging.INFO)
@@ -55,6 +56,7 @@ UPLOAD_DIR = Path(
     os.getenv("HRP_STORAGE_DIR", str(BASE_DIR / "uploads"))
 ).expanduser().resolve()
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+india_source_monitor = IndiaSourceMonitor(BASE_DIR, UPLOAD_DIR / '_india_sources.json')
 COAL_UPLOAD_DIR = UPLOAD_DIR / "coal"
 COAL_UPLOAD_DIR.mkdir(exist_ok=True)
 BUNDLED_DATA_DIR = UPLOAD_DIR / "_bundled_data"
@@ -500,17 +502,17 @@ def _coal_dashboard_payload(
                     mix_frame["renewables_ex_large_hydro_gwh"] + mix_frame["large_hydro_generation_gwh"]
                 ) / mix_frame["total_generation_gwh"] * 100
         if not frame.empty:
-            frame["production_yoy_pct"] = frame["production_mt"].pct_change() * 100
+            frame["production_period_change_pct"] = frame["production_mt"].pct_change(fill_method=None) * 100
             if "dispatch_mt" in frame:
-                frame["dispatch_yoy_pct"] = frame["dispatch_mt"].pct_change() * 100
+                frame["dispatch_period_change_pct"] = frame["dispatch_mt"].pct_change(fill_method=None) * 100
         charts = [
             {"id": "supply-volume", "title": "Domestic production and dispatch", "subtitle": "Official national totals; gaps are retained, never interpolated", "x_label": "Reporting period", "y_label": "Million tonnes (MT)", "type": "line", "series": [
                 {"key": "production_mt", "label": "Production", "color": "#003671"},
                 {"key": "dispatch_mt", "label": "Dispatch", "color": "#db2f34"},
             ]},
             {"id": "supply-yoy", "title": "Period-on-period change", "subtitle": "Recomputed at the selected aggregation frequency", "x_label": "Reporting period", "y_label": "Change (%)", "type": "column", "series": [
-                {"key": "production_yoy_pct", "label": "Production change", "color": "#003671"},
-                {"key": "dispatch_yoy_pct", "label": "Dispatch change", "color": "#d8902f"},
+                {"key": "production_period_change_pct", "label": "Production change", "color": "#003671"},
+                {"key": "dispatch_period_change_pct", "label": "Dispatch change", "color": "#d8902f"},
             ]},
         ]
         if tab == "overview":
@@ -3283,6 +3285,15 @@ async def coal_analysis():
     return _india_coal_analysis()
 
 
+@app.get("/api/coal/dashboard/periods")
+def coal_dashboard_periods():
+    periods = set()
+    for filename in ("coal_monthly_official.csv", "india_power_generation_monthly.csv", "india_power_mix_monthly.csv", "coal_imports_monthly.csv"):
+        frame = _canonical_frame(filename)
+        periods.update(p for p in frame["period"].astype(str) if re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2])", p))
+    return {"periods": sorted(periods)}
+
+
 @app.get("/api/coal/dashboard")
 async def coal_dashboard(
     tab: str = Query("overview"),
@@ -4371,6 +4382,21 @@ async def start_news_intelligence_collection():
     asyncio.create_task(news_intelligence_manager.refresh())
 
 
+@app.on_event("startup")
+async def start_india_source_monitor():
+    india_source_monitor.start()
+
+
+@app.on_event("shutdown")
+async def stop_india_source_monitor():
+    await india_source_monitor.stop()
+
+
+@app.get("/api/india/sources")
+async def india_sources():
+    return india_source_monitor.response()
+
+
 @app.on_event("shutdown")
 async def stop_ais_live_manager():
     await ais_live_manager.stop()
@@ -4538,6 +4564,7 @@ async def refresh_bmkg_marine_weather(hours: int = Query(0, ge=0, le=96)):
     try:
         await bmkg_marine_weather_manager.refresh(force=True)
     except Exception as exc:
+        bmkg_marine_weather_manager.last_error = str(exc)
         if not bmkg_marine_weather_manager.payload:
             raise HTTPException(
                 503, f"BMKG maritime weather refresh failed: {exc}"
@@ -5206,7 +5233,7 @@ async def market_news(
     The provider credential remains server-side; the browser receives only
     source article metadata and never the provider request URL or API key.
     """
-    if not news_intelligence_manager.payload:
+    if not news_intelligence_manager.payload or not news_intelligence_manager._is_fresh():
         await news_intelligence_manager.refresh()
     return news_intelligence_manager.response(topic=topic, query=q.strip())
 

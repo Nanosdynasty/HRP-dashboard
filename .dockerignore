@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+!.env.example
+.venv
+node_modules
+uploads
+tmp
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.superdesign

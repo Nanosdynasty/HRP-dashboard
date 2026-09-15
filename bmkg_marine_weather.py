@@ -29,6 +29,7 @@ BMKG_WATER_GEOMETRY = f"{BMKG_ROOT}public_api/static/wilayah_perairan.json"
 BMKG_PORT_SOURCE = f"{BMKG_ROOT}cuaca/pelabuhan"
 BMKG_WATER_SOURCE = f"{BMKG_ROOT}cuaca/perairan"
 REFRESH_SECONDS = 3 * 60 * 60
+FAILED_REFRESH_RETRY_SECONDS = 10 * 60
 SCHEMA_VERSION = 3
 
 DIRECTION_EN = {
@@ -355,6 +356,7 @@ class BmkgMarineWeatherManager:
         changed = [
             str(item["name"]) for item in files
             if previous_dates.get(str(item["name"])) != dates[str(item["name"])]
+            or not any(row.get("source_file") == item["name"] for row in retained)
         ]
         semaphore = asyncio.Semaphore(18)
 
@@ -373,13 +375,26 @@ class BmkgMarineWeatherManager:
         for file_name, result in fetched:
             if isinstance(result, Exception):
                 errors.append(f"{file_name}: {result}")
+                # A listing timestamp is not proof the file was downloaded.
+                # Keep the successful timestamp so this file is retried.
+                dates.pop(file_name, None)
+                if file_name in previous_dates:
+                    dates[file_name] = previous_dates[file_name]
                 # Preserve the last successful normalized version on a partial outage.
                 rows.extend(row for row in previous_rows if row.get("source_file") == file_name)
                 continue
             if geometry_by_code is None:
-                rows.extend(normalizer(result, file_name))
+                normalized = normalizer(result, file_name)
             else:
-                rows.extend(normalizer(result, file_name, geometry_by_code))
+                normalized = normalizer(result, file_name, geometry_by_code)
+            if not normalized:
+                errors.append(f"{file_name}: no usable forecasts")
+                dates.pop(file_name, None)
+                if file_name in previous_dates:
+                    dates[file_name] = previous_dates[file_name]
+                rows.extend(row for row in previous_rows if row.get("source_file") == file_name)
+            else:
+                rows.extend(normalized)
         return rows, dates, errors
 
     async def refresh(self, force: bool = False) -> Dict[str, Any]:
@@ -387,10 +402,15 @@ class BmkgMarineWeatherManager:
             fetched_at = _parse_utc(self.payload.get("fetched_at"))
             if not force and fetched_at:
                 age = datetime.now(timezone.utc) - fetched_at
-                if age.total_seconds() < self.refresh_seconds:
+                retry_seconds = FAILED_REFRESH_RETRY_SECONDS if self.payload.get("parse_warnings") else self.refresh_seconds
+                if age.total_seconds() < retry_seconds:
                     return self.payload
             headers = {"User-Agent": "HRP-Dashboard/1.0 (+BMKG maritime forecast visualization)"}
-            async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=45) as client:
+            async with httpx.AsyncClient(
+                headers=headers,
+                follow_redirects=True,
+                timeout=httpx.Timeout(25.0, connect=8.0),
+            ) as client:
                 port_list_response, water_list_response, geometry_response = await asyncio.gather(
                     client.get(BMKG_PORT_LIST),
                     client.get(BMKG_WATER_LIST),
@@ -455,18 +475,26 @@ class BmkgMarineWeatherManager:
         payload["hours"] = hours
         payload["rows"] = select_forecast_rows(self.payload.get("rows") or [], hours)
         payload["last_error"] = self.last_error
+        fetched_at = _parse_utc(self.payload.get("fetched_at"))
+        age = (datetime.now(timezone.utc) - fetched_at).total_seconds() if fetched_at else None
+        payload["refresh_age_hours"] = age / 3600 if age is not None else None
+        payload["stale"] = age is None or age >= self.refresh_seconds
         return payload
 
     async def _run(self) -> None:
         while not self.stopping:
+            wait_seconds = self.refresh_seconds
             try:
                 await self.refresh()
+                if self.last_error:
+                    wait_seconds = min(self.refresh_seconds, FAILED_REFRESH_RETRY_SECONDS)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.last_error = str(exc)
                 log.warning("BMKG maritime refresh failed: %s", exc)
-            await asyncio.sleep(self.refresh_seconds)
+                wait_seconds = min(self.refresh_seconds, FAILED_REFRESH_RETRY_SECONDS)
+            await asyncio.sleep(wait_seconds)
 
     def start(self) -> None:
         if not self.task or self.task.done():

@@ -747,7 +747,8 @@ function renderNewsWorkspace() {
   sidebarStatus.textContent = payload.fresh ? `${Number(payload.total || 0)} headlines` : "Refreshing";
   const fetched = payload.fetched_at ? newsPublishedLabel(payload.fetched_at).replace("Published ", "Updated ") : "Updating";
   const connectedProviders = (payload.providers || []).filter(provider => provider.connected).map(provider => provider.label);
-  subtitle.textContent = `${Number(payload.total || 0)} commercially screened headlines · ${fetched} · ${connectedProviders.join(", ") || "connecting sources"}`;
+  const windowText = Number(payload.publication_window_hours || 24) === 72 ? "72-hour weekend window" : "last 24 hours";
+  subtitle.textContent = `${Number(payload.total || 0)} commercially screened headlines · ${windowText} · ${fetched} · ${connectedProviders.join(", ") || "connecting sources"}`;
   const topicCounts = (payload.rows || []).reduce((counts, row) => {
     (row.topics || []).forEach(item => { counts[item] = (counts[item] || 0) + 1; });
     return counts;
@@ -762,16 +763,16 @@ function renderNewsWorkspace() {
   }
   const lead = rows[0];
   const tags = (lead.topics || []).slice(0, 2).map(item => `<span class="news-tag ${escapeAttr(item)}">${escapeHtml(newsTopicLabel(item))}</span>`).join("");
-  const image = lead.image_url
-    ? `<img src="${escapeAttr(lead.image_url)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`
-    : "";
   const leadLink = lead.link ? `<a class="news-link" href="${escapeAttr(lead.link)}" target="_blank" rel="noopener noreferrer">Read original coverage</a>` : "";
   const rest = rows.slice(1, 9);
-  feed.innerHTML = `<article class="news-lead"><div class="news-lead-copy"><span class="news-kicker">${escapeHtml(lead.relevance_reason || "COMMERCIAL SIGNAL")}</span><div class="news-row-meta"><span>${escapeHtml(lead.source_name || "News source")}</span><span>${escapeHtml(lead.provider_name || "")}</span><span>${escapeHtml(newsPublishedLabel(lead.published_at))}</span>${tags}</div><h2>${escapeHtml(lead.title)}</h2><p>${escapeHtml(lead.description || "Open the original publisher link for the full report.")}</p>${leadLink}</div><div class="news-image">${image}</div></article>
+  const leadDescription = lead.description
+    ? `<p>${escapeHtml(lead.description)}</p>`
+    : "";
+  feed.innerHTML = `<article class="news-lead"><div class="news-lead-copy"><div><span class="news-kicker">${escapeHtml(lead.relevance_reason || "COMMERCIAL SIGNAL")}</span><div class="news-row-meta"><span>${escapeHtml(lead.source_name || "News source")}</span><span>${escapeHtml(lead.provider_name || "")}</span><span>${escapeHtml(newsPublishedLabel(lead.published_at))}</span>${tags}</div><h2>${escapeHtml(lead.title)}</h2>${leadDescription}</div>${leadLink}</div></article>
     <section class="news-list"><header><strong>Latest signals</strong><span>${rows.length - 1} more in view</span></header>${rest.map(row => {
       const articleTags = (row.topics || []).slice(0, 2).map(item => `<span class="news-tag ${escapeAttr(item)}">${escapeHtml(newsTopicLabel(item))}</span>`).join("");
       const title = escapeHtml(row.title || "Untitled article");
-      return `<article class="news-row"><div class="news-row-meta"><span>${escapeHtml(row.source_name || "News source")}</span><span>${escapeHtml(row.provider_name || "")}</span><span>${escapeHtml(newsPublishedLabel(row.published_at))}</span>${articleTags}</div><small>${escapeHtml(row.relevance_reason || "Commercial dry-bulk signal")}</small>${row.link ? `<a href="${escapeAttr(row.link)}" target="_blank" rel="noopener noreferrer"><h3>${title}</h3></a>` : `<h3>${title}</h3>`}</article>`;
+      return `<article class="news-row"><div class="news-row-meta"><span>${escapeHtml(row.source_name || "News source")}</span><span>${escapeHtml(row.provider_name || "")}</span><span>${escapeHtml(newsPublishedLabel(row.published_at))}</span></div><div class="news-row-reason">${escapeHtml(row.relevance_reason || "Commercial dry-bulk signal")}</div>${row.link ? `<a href="${escapeAttr(row.link)}" target="_blank" rel="noopener noreferrer"><h3>${title}</h3></a>` : `<h3>${title}</h3>`}<div class="news-row-tags">${articleTags}</div></article>`;
     }).join("")}</section>`;
 }
 
@@ -3339,10 +3340,9 @@ async function loadCoalAnalysis() {
   const from = document.getElementById("coal-analysis-from");
   const to = document.getElementById("coal-analysis-to");
   if (!from.options.length) {
-    const periods = [];
-    for (let date = new Date(2023, 4, 1); date <= new Date(2026, 5, 1); date.setMonth(date.getMonth() + 1)) {
-      periods.push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`);
-    }
+    const response = await fetch('/api/coal/dashboard/periods');
+    if (!response.ok) throw new Error('Available reporting periods could not be loaded');
+    const {periods} = await response.json();
     from.innerHTML = periods.map(period =>
       `<option value="${escapeAttr(period)}">${escapeHtml(formatCoalPeriod(period))}</option>`
     ).join("");
@@ -3443,6 +3443,11 @@ function renderCoalDashboard(payload) {
     `<small>${escapeHtml(chart.y_label)}</small></header>` +
     `<div class="coal-dashboard-chart" id="coal-dynamic-chart-${index}"></div></article>`
   ).join("") + dashboardTable(payload, false) + dashboardSources(payload);
+  container.insertAdjacentHTML("beforeend", '<details class="broker-source-details"><summary>India official sources and automatic updates</summary><div id="india-source-monitor">Loading source coverage…</div></details>');
+  fetch('/api/india/sources').then(response=>response.json()).then(payload=>{
+    const panel=document.getElementById('india-source-monitor');
+    if(panel) panel.innerHTML=(payload.sources||[]).map(source=>`<p><a href="${escapeAttr(source.url)}" target="_blank" rel="noopener">${escapeHtml(source.label)}</a> · ${escapeHtml(source.status)}<br><small>${escapeHtml(source.integration)} · checked daily${source.refresh_result?.latest_observation ? ` · latest observation ${escapeHtml(formatMonthYear(source.refresh_result.latest_observation))}` : ''}</small>${(source.reports||[]).slice(0,3).map(report=>`<br><a href="${escapeAttr(report.url)}" target="_blank" rel="noopener">${escapeHtml(report.title)}</a>`).join('')}</p>`).join('');
+  }).catch(()=>{const panel=document.getElementById('india-source-monitor');if(panel)panel.textContent='Source status unavailable.';});
   (payload.charts || []).forEach((chart, index) => renderDynamicCoalChart(
     `coal-dynamic-chart-${index}`,
     Array.isArray(chart.rows) ? chart.rows : payload.rows,
@@ -3526,6 +3531,7 @@ function formatDashboardCell(value, column) {
 }
 
 function renderDynamicCoalChart(id, rows, chart) {
+  if (typeof renderBrokerChart === "function" && renderBrokerChart(id, rows, chart)) return;
   const container = document.getElementById(id);
   const series = chart.series || [];
   const chartNumber = value => {

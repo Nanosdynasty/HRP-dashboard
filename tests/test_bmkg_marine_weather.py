@@ -1,10 +1,63 @@
 import unittest
+import tempfile
+from pathlib import Path
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
 from app import app, bmkg_marine_weather_manager
-from bmkg_marine_weather import normalize_port, normalize_water, select_forecast_rows
+import httpx
+from bmkg_marine_weather import BmkgMarineWeatherManager, normalize_port, normalize_water, select_forecast_rows
+
+
+class BmkgRefreshRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_file_is_retried_without_listing_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = BmkgMarineWeatherManager(Path(directory) / 'cache.json')
+            files = [{'name': 'port.json', 'file_date': 'new'}]
+            previous = [{'source_file': 'port.json', 'weather_condition': 'Old'}]
+            calls = []
+
+            def handler(request):
+                calls.append(request)
+                if len(calls) == 1:
+                    return httpx.Response(503)
+                return httpx.Response(200, json={'weather': 'New'})
+
+            def normalizer(payload, filename):
+                return [{'source_file': filename, 'weather_condition': payload['weather']}]
+
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                rows, dates, errors = await manager._fetch_changed(
+                    client, files, 'https://example.test/{file_name}', normalizer, previous, {'port.json': 'old'})
+                self.assertEqual(rows, previous)
+                self.assertEqual(dates['port.json'], 'old')
+                self.assertTrue(errors)
+                rows, dates, errors = await manager._fetch_changed(
+                    client, files, 'https://example.test/{file_name}', normalizer, rows, dates)
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(rows[0]['weather_condition'], 'New')
+                self.assertEqual(dates['port.json'], 'new')
+                self.assertFalse(errors)
+
+    async def test_missing_rows_are_fetched_even_when_timestamp_matches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = BmkgMarineWeatherManager(Path(directory) / 'cache.json')
+            async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={'ok': True}))) as client:
+                rows, dates, errors = await manager._fetch_changed(
+                    client, [{'name': 'port.json', 'file_date': 'new'}],
+                    'https://example.test/{file_name}',
+                    lambda payload, filename: [{'source_file': filename}], [], {'port.json': 'new'})
+                self.assertEqual(len(rows), 1)
+                self.assertFalse(errors)
+
+    def test_old_cache_is_marked_stale(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = BmkgMarineWeatherManager(Path(directory) / 'cache.json')
+            manager.payload = {'fetched_at': '2000-01-01T00:00:00Z', 'rows': []}
+            self.assertTrue(manager.selected_payload()['stale'])
+            self.assertGreater(manager.selected_payload()['refresh_age_hours'], 3)
 
 
 class BmkgMarineWeatherNormalizationTests(unittest.TestCase):

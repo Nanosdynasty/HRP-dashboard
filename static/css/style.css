@@ -1101,8 +1101,8 @@ button, summary, label, select { -webkit-tap-highlight-color: transparent; }
 .weather-workspace-table tr.severity-advisory td:first-child { border-left: 3px solid #d68a1d; }
 .weather-workspace-table button,
 .weather-workspace-card > button { padding: 7px 10px; border: 1px solid #174f82; color: #174f82; background: #fff; font-size: 8px; font-weight: 700; cursor: pointer; }
-.weather-workspace-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(285px, 1fr)); gap: 14px; padding: 18px 24px 30px; }
-.weather-workspace-card { display: flex; min-height: 330px; flex-direction: column; padding: 17px; border-top: 3px solid #2c91b4; background: #fff; box-shadow: 0 5px 18px rgba(27,45,56,.08); }
+.weather-workspace-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); align-items: start; gap: 16px; padding: 18px 24px 30px; }
+.weather-workspace-card { display: flex; flex-direction: column; padding: 19px; border: 1px solid #dde6ec; border-top: 3px solid #2c91b4; border-radius: 8px; background: #fff; box-shadow: 0 3px 12px rgba(27,45,56,.05); }
 .weather-workspace-card.severity-warning { border-top-color: #c93036; }
 .weather-workspace-card.severity-advisory { border-top-color: #d68a1d; }
 .weather-workspace-card header { display: flex; justify-content: space-between; gap: 12px; }
@@ -2059,6 +2059,43 @@ section[data-gtt-panel="overview"] > .gtt-kpis { order:2; margin-top:11px; }
 .river-sparkline-empty { margin: 4px 0 12px; padding: 12px; background: #f4f6f7; border: 1px dashed #ccd6db; text-align: center; }
 .river-key { background: #1976a3; }
 
+.broker-weather-panel { margin:12px 0; padding:14px; border-left:3px solid #287b9d; background:#f1f6f8; color:#18354c; }
+.broker-weather-panel.adverse { border-color:#bd303e; background:#fff1f1; }
+.broker-weather-panel.stale { border-color:#a87c32; background:#fff8e9; }
+.broker-weather-panel header { display:flex; justify-content:space-between; gap:10px; font-size:12px; }
+.broker-weather-panel header span,.broker-weather-panel small { font-size:10px; color:#576874; }
+.broker-weather-values { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:14px 0; }
+.broker-weather-values span,.broker-weather-values strong { display:block; }
+.broker-weather-values span { font-size:10px; color:#526676; }
+.broker-weather-values strong { margin-top:5px; font-size:16px; }
+.broker-weather-panel ul { margin:8px 0; padding-left:18px; font-size:12px; line-height:1.5; }
+.broker-weather-panel p { font-size:12px; line-height:1.5; }
+.broker-source-details summary { cursor:pointer; padding:10px 0; font-size:12px; color:#275879; }
+.broker-timeline { display:flex; overflow-x:auto; gap:1px; background:#e0e8ef; margin:12px 0; }
+.broker-timeline>div { min-width:105px; padding:12px; background:#f7fafc; display:grid; gap:6px; }
+.broker-timeline time,.broker-timeline small,.broker-timeline-note { font-size:11px; color:#526676; }
+.broker-chart-controls { display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; margin:10px 0; font-size:12px; }
+.broker-chart-controls select,.broker-chart-controls button { padding:7px; border:1px solid #c8d7e2; background:white; color:#163952; }
+.broker-chart-body svg { width:100%; height:auto; min-height:230px; font:11px sans-serif; fill:#365164; }
+.broker-chart-legend { display:flex; flex-wrap:wrap; gap:10px; font-size:11px; padding:6px; }
+.broker-chart-legend i { display:inline-block; width:9px; height:9px; margin-right:5px; }
+.weather-rain { opacity:.8; transform:scale(.78); filter:drop-shadow(0 0 2px white) drop-shadow(0 1px 1px #163952); }
+.weather-rain.animated::before { animation:weather-cloud 4s ease-in-out infinite; }
+.weather-rain.animated i { animation-duration:1.6s; }
+.weather-wind.animated i { animation-duration:2.8s; }
+/* Wind streaks communicate wind presence, never an unsupported bearing. */
+.weather-wind i::after { display:none; }
+.broker-weather-overview { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:18px 24px 0; padding:18px; border:1px solid #dce5eb; background:#f4f8fa; border-radius:8px; }
+.broker-weather-overview div { display:flex; flex-direction:column; gap:8px; }
+.broker-weather-overview span { font-size:11px; color:#506373; }
+.broker-weather-overview strong { font-size:25px; color:#123e5d; }
+.broker-weather-overview p { grid-column:1/-1; margin:3px 0 0; font-size:11px; color:#596b79; line-height:1.5; }
+.broker-weather-timing { display:flex; flex-wrap:wrap; gap:7px 16px; margin:8px 0 12px; padding:9px 0; border-block:1px solid #e5ebef; color:#657684; font-size:11px; line-height:1.5; }
+.broker-weather-timing strong { display:block; color:#284455; font-weight:600; }
+.weather-workspace-card .broker-weather-panel { margin:8px 0 12px; }
+.weather-workspace-card .broker-source-details { margin:4px 0 12px; }
+@media(max-width:900px) { .broker-weather-overview { grid-template-columns:repeat(2,minmax(0,1fr)); margin:12px; } }
+@media (prefers-reduced-motion: reduce) { .weather-symbols *, .weather-cyclone, .cyclone-card-motion *, .cyclone-forecast-track { animation:none!important; } }
 /* Market news workspace: a compact, source-first editorial scan for research. */
 .news-icon { background: #c44343; }
 .news-section[open] { border-left-color: #c44343; }
@@ -2091,28 +2128,29 @@ section[data-gtt-panel="overview"] > .gtt-kpis { order:2; margin-top:11px; }
 .news-metrics span { color: #71808c; font-size: 7px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .news-metrics strong { margin: 5px 0 3px; color: var(--hrp-navy); font-size: 18px; }
 .news-metrics small { color: #75838d; font-size: 8px; }
-.news-feed { display: grid; grid-template-columns: minmax(330px, 1.3fr) minmax(290px, .7fr); gap: 14px; padding: 15px 28px 30px; }
+.news-feed { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 15px 28px 30px; }
 .news-lead, .news-list, .news-empty { border: 1px solid #dce3e8; background: #fff; box-shadow: 0 5px 18px rgba(23,39,65,.06); }
-.news-lead { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(180px, .9fr); min-height: 260px; overflow: hidden; }
-.news-lead-copy { display: flex; flex-direction: column; padding: 22px; }
+.news-lead { position: relative; overflow: hidden; border-left: 4px solid #c44343; }
+.news-lead::after { content: ''; position: absolute; right: -38px; bottom: -54px; width: 210px; height: 210px; border: 34px solid rgba(18,75,120,.045); border-radius: 50%; pointer-events: none; }
+.news-lead-copy { position: relative; z-index: 1; display: flex; align-items: end; justify-content: space-between; gap: 28px; padding: 23px 25px 21px; }
 .news-kicker, .news-meta { color: #63727d; font-size: 8px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 .news-kicker { color: #c44343; }
-.news-lead h2 { margin: 10px 0 8px; color: var(--hrp-navy); font-size: 22px; line-height: 1.16; }
-.news-lead p { margin: 0; color: #52626f; font-size: 10px; line-height: 1.55; }
-.news-link { display: inline-flex; align-items: center; gap: 5px; width: fit-content; margin-top: auto; padding-top: 18px; color: var(--hrp-blue); font-size: 9px; font-weight: 800; text-decoration: none; }
+.news-lead h2 { max-width: 940px; margin: 9px 0 7px; color: var(--hrp-navy); font-size: 22px; line-height: 1.16; }
+.news-lead p { max-width: 920px; margin: 0; color: #52626f; font-size: 10px; line-height: 1.55; }
+.news-link { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; width: fit-content; color: var(--hrp-blue); font-size: 9px; font-weight: 800; text-decoration: none; white-space: nowrap; }
 .news-link::after { content: '↗'; font-size: 12px; }
-.news-image { min-height: 200px; background: linear-gradient(135deg, #263e5c, #6e8297); }
-.news-image img { display: block; width: 100%; height: 100%; object-fit: cover; }
-.news-list { display: grid; align-content: start; }
-.news-list > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #e3e8eb; }
+.news-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); align-content: start; gap: 1px; overflow: hidden; background: #e1e7eb; }
+.news-list > header { display: flex; grid-column: 1 / -1; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; border-bottom: 1px solid #e3e8eb; background: #fff; }
 .news-list > header strong { font-size: 12px; }
 .news-list > header span { color: #77858f; font-size: 8px; }
-.news-row { display: grid; gap: 5px; padding: 13px 16px; border-bottom: 1px solid #e7ecef; }
-.news-row:last-child { border-bottom: 0; }
-.news-row h3 { margin: 0; color: var(--hrp-navy); font-size: 11px; line-height: 1.35; }
+.news-row { display: flex; min-width: 0; min-height: 142px; flex-direction: column; gap: 7px; padding: 16px; border: 0; background: #fff; transition: background .15s ease, box-shadow .15s ease; }
+.news-row:hover { position: relative; z-index: 1; background: #fbfdfe; box-shadow: inset 0 3px 0 var(--hrp-blue); }
+.news-row h3 { display: -webkit-box; overflow: hidden; margin: 0; color: var(--hrp-navy); font-size: 12px; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .news-row a { color: inherit; text-decoration: none; }
 .news-row a:hover h3 { color: var(--hrp-blue); }
 .news-row-meta { display: flex; flex-wrap: wrap; gap: 5px 8px; color: #75838e; font-size: 8px; }
+.news-row-reason { overflow: hidden; color: #a23c3c; font-size: 8px; font-weight: 800; letter-spacing: .04em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
+.news-row-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: auto; }
 .news-tag { padding: 3px 5px; color: #245279; background: #eaf2f7; font-size: 7px; font-weight: 800; text-transform: uppercase; }
 .news-tag.weather { color: #8b5b14; background: #fff3d8; }
 .news-tag.coal { color: #7b3d3d; background: #f9eaea; }
@@ -2127,9 +2165,9 @@ section[data-gtt-panel="overview"] > .gtt-kpis { order:2; margin-top:11px; }
   .news-surface-actions input { width: 100%; }
   .news-topic-tabs { padding: 12px 16px 0; }
   .news-metrics { grid-template-columns: 1fr 1fr; padding: 12px 16px 0; }
-  .news-feed { grid-template-columns: 1fr; padding: 12px 16px 22px; }
-  .news-lead { grid-template-columns: 1fr; }
-  .news-image { min-height: 180px; order: -1; }
+  .news-feed { padding: 12px 16px 22px; }
+  .news-lead-copy { align-items: start; flex-direction: column; gap: 14px; padding: 19px; }
+  .news-list { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 900px) {

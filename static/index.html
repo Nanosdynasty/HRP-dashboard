@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Howe Robinson | Global Assets Map</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="/static/css/style.css?v=20260902-news-intelligence-1" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260915-tabs-bmkg-1" />
 </head>
 <body>
   <div class="app-shell">
@@ -16,7 +16,7 @@
       </header>
 
       <div class="panel-scroll">
-        <details class="filter-section" data-mode="energy" hidden>
+        <details class="filter-section" data-mode="energy">
           <summary>
             <span><i class="section-icon energy-icon"></i>Energy</span>
             <span class="section-count" id="energy-active-count">0 active</span>
@@ -188,7 +188,7 @@
           </div>
         </details>
 
-        <details class="filter-section" data-mode="commodities" hidden>
+        <details class="filter-section" data-mode="commodities">
           <summary>
             <span><i class="section-icon commodity-icon"></i>Commodities</span>
             <span class="section-count" id="commodity-active-count">0 active</span>
@@ -289,7 +289,7 @@
           </div>
         </details>
 
-        <details class="filter-section datahub-section" data-mode="datahub" hidden>
+        <details class="filter-section datahub-section" data-mode="datahub">
           <summary>
             <span><i class="section-icon datahub-icon"></i>Data Hub</span>
             <span class="section-count" id="datahub-sidebar-status">Master store</span>
@@ -1048,6 +1048,7 @@
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/js/app.js?v=20260902-news-intelligence-1"></script>
+  <script src="/static/js/broker-tools.js?v=20260915-tabs-bmkg-1"></script>
+  <script src="/static/js/app.js?v=20260915-tabs-bmkg-1"></script>
 </body>
 </html>
