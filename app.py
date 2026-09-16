@@ -5151,7 +5151,7 @@ def _river_source_inventory(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 async def river_levels(
     waterway: Optional[str] = Query(None),
     country: Optional[str] = Query(None),
-    waterbody_type: Optional[str] = Query(None, pattern="^(river|reservoir)$"),
+    waterbody_type: Optional[str] = Query(None, pattern="^(river|reservoir|canal)$"),
     status: Optional[str] = Query(None),
     comparison_status: Optional[str] = Query(None, pattern="^(below_normal|normal|above_normal|unavailable)$"),
     history_limit: int = Query(120, ge=0, le=500),
@@ -5263,7 +5263,7 @@ async def export_river_levels_csv():
 async def export_river_levels_excel(
     waterway: Optional[str] = Query(None),
     country: Optional[str] = Query(None),
-    waterbody_type: Optional[str] = Query(None, pattern="^(river|reservoir)$"),
+    waterbody_type: Optional[str] = Query(None, pattern="^(river|reservoir|canal)$"),
     comparison_status: Optional[str] = Query(None, pattern="^(below_normal|normal|above_normal|unavailable)$"),
 ):
     if not river_level_manager.payload:

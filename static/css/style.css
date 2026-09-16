@@ -2026,6 +2026,7 @@ section[data-gtt-panel="overview"] > .gtt-kpis { order:2; margin-top:11px; }
 .river-workspace-card.river-status-below_normal { --river-color:#c47a16; }
 .river-workspace-card.river-status-above_normal { --river-color:#7d3c98; }
 .river-workspace-card.river-status-unavailable { --river-color:#7b8992; }
+.river-workspace-card.river-status-monitoring { --river-color:#bd5a3c; }
 .river-workspace-card header { display: flex; justify-content: space-between; gap: 12px; }
 .river-workspace-card header span { color: #1976a3; font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .river-workspace-card h2 { margin: 3px 0 0; font-size: 16px; }
@@ -2058,6 +2059,13 @@ section[data-gtt-panel="overview"] > .gtt-kpis { order:2; margin-top:11px; }
 .river-sparkline small, .river-sparkline-empty { color: #75848e; font-size: 7px; }
 .river-sparkline-empty { margin: 4px 0 12px; padding: 12px; background: #f4f6f7; border: 1px dashed #ccd6db; text-align: center; }
 .river-key { background: #1976a3; }
+.river-related-news { display: grid; gap: 7px; margin: 13px 0; padding: 11px; border: 1px solid #dce5e9; border-left: 3px solid #bd5a3c; background: #f7fafb; }
+.river-related-news > strong { color: var(--hrp-navy); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+.river-related-news > span { color: #73818b; font-size: 8px; }
+.river-related-news a { display: grid; gap: 2px; color: var(--hrp-navy); text-decoration: none; }
+.river-related-news a:hover b { color: var(--hrp-blue); }
+.river-related-news b { font-size: 9px; line-height: 1.35; }
+.river-related-news small { color: #75838d; font-size: 7px; }
 
 .broker-weather-panel { margin:12px 0; padding:14px; border-left:3px solid #287b9d; background:#f1f6f8; color:#18354c; }
 .broker-weather-panel.adverse { border-color:#bd303e; background:#fff1f1; }

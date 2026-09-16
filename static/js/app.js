@@ -1690,6 +1690,7 @@ function updateRiverExportLink() {
 }
 
 function riverComparisonLabel(row) {
+  if (row.waterbody_type === "canal") return "Operational monitoring profile";
   return ({ below_normal: "Below normal", normal: "Within normal range", above_normal: "Above normal", unavailable: "Baseline unavailable" })[row.comparison_status] || "Baseline unavailable";
 }
 
@@ -1705,7 +1706,7 @@ function renderRiverLevels() {
     // Use a DOM marker rather than Leaflet's canvas circle renderer.  Canvas
     // points have a very small hit area and can sit below other canvas layers,
     // making a visible gauge unexpectedly hard to select.
-    const radius = row.waterbody_type === "reservoir" ? 8 : 7;
+    const radius = row.waterbody_type === "reservoir" ? 8 : row.waterbody_type === "canal" ? 9 : 7;
     const marker = L.marker([lat, lon], {
       icon: L.divIcon({
         className: "river-map-marker-shell",
@@ -1760,8 +1761,9 @@ function showRiverLevelCard(row) {
   card.classList.remove("port-spec-card", "weather-detail-card");
   card.classList.add("river-detail-card");
   const details = riverDetails(row);
+  const isCanal = row.waterbody_type === "canal";
   document.getElementById("port-card-content").innerHTML =
-    `<span class="detail-eyebrow">${escapeHtml(row.waterbody_type === "reservoir" ? "RESERVOIR LEVEL" : "RIVER GAUGE")}</span>` +
+    `<span class="detail-eyebrow">${escapeHtml(isCanal ? "CANAL OPERATIONS" : row.waterbody_type === "reservoir" ? "RESERVOIR LEVEL" : "RIVER GAUGE")}</span>` +
     `<h2>${escapeHtml(row.station)}</h2>` +
     `<p class="detail-meta">${escapeHtml(row.waterbody)} · ${escapeHtml(row.country)} · ${escapeHtml(riverObservedTimestamp(row))}</p>` +
     `<div class="river-card-status" style="--river-status:${escapeAttr(riverConditionColor(row.comparison_status))}">${escapeHtml(riverComparisonLabel(row))}</div>` +
@@ -1770,9 +1772,26 @@ function showRiverLevelCard(row) {
     `<p class="weather-card-summary"><strong>Comparison basis:</strong> ${escapeHtml(row.normal_basis || "Not available from this official feed")}</p>` +
     `<p class="weather-card-summary">${escapeHtml(row.quality_note || row.navigation_note || "Confirm the official source before operational use.")}</p>` +
     (row.source_url ? `<a class="official-port-link weather-source-link" href="${escapeAttr(row.source_url)}" target="_blank" rel="noopener">Open official source</a>` : "") +
-    `<p class="detail-note">Source: ${escapeHtml(row.source_name)} · ${escapeHtml(row.source_method || "official publication")}. Gauge height is not channel depth or permissible draft.</p>`;
+    `<p class="detail-note">Source: ${escapeHtml(row.source_name)} · ${escapeHtml(row.source_method || "official publication")}. ${escapeHtml(isCanal ? "Current congestion and queue figures require the authority advisory feed." : "Gauge height is not channel depth or permissible draft.")}</p>` +
+    (isCanal ? `<section class="river-related-news" data-canal-news><strong>Related canal news</strong><span>Loading latest headlines…</span></section>` : "");
   card.classList.add("open");
   card.setAttribute("aria-hidden", "false");
+  if (isCanal) loadCanalNews(row);
+}
+
+async function loadCanalNews(row) {
+  const target = document.querySelector("[data-canal-news]");
+  if (!target) return;
+  const query = row.extra_metrics?.["Related news query"] || row.waterbody;
+  try {
+    const response = await fetch(`/api/news?q=${encodeURIComponent(query)}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || "News unavailable");
+    const rows = (payload.rows || []).slice(0, 4);
+    target.innerHTML = `<strong>Related canal news</strong>${rows.length ? rows.map(item => `<a href="${escapeAttr(item.link || "#")}" target="_blank" rel="noopener"><b>${escapeHtml(item.title)}</b><small>${escapeHtml(item.source_name || "News source")} · ${escapeHtml(newsPublishedLabel(item.published_at))}</small></a>`).join("") : `<span>No matching headlines in the current feed.</span>`}`;
+  } catch (error) {
+    target.innerHTML = `<strong>Related canal news</strong><span>${escapeHtml(error.message)}</span>`;
+  }
 }
 
 function renderRiverWorkspace() {

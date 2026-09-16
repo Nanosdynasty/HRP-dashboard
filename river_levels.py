@@ -115,6 +115,10 @@ COMMERCIAL_WATERWAY_ROLES = {
     "paraná river": "South American grain and dry-bulk export corridor",
     "paraguay river": "Paraguay–Paraná grain, ore and bulk-barge corridor",
     "gatún lake / panama canal": "Ocean-shipping canal reservoir",
+    "panama canal": "Atlantic–Pacific ocean-shipping canal",
+    "suez canal": "Mediterranean–Red Sea ocean-shipping canal",
+    "kiel canal": "North Sea–Baltic short-sea shipping canal",
+    "welland canal": "Great Lakes–St. Lawrence ocean-shipping canal",
 }
 
 EXCLUDED_RIVER_COUNTRIES = {"Bangladesh", "India"}
@@ -223,7 +227,84 @@ SOURCE_CATALOG: List[Dict[str, Any]] = [
         "status": "connected", "frequency": "Daily",
         "metrics": "Official lake level, permitted transit draft and fresh-water surcharge", "url": ACP_GATUN_PAGE,
     },
+    {
+        "id": "panama-canal-transits", "region": "Panama", "waterways": "Panama Canal",
+        "authority": "Panama Canal Authority – Advisories to Shipping", "access": "Official advisories portal",
+        "status": "connector_ready", "frequency": "Intraday / advisory",
+        "metrics": "Transit restrictions, booking slots, draft limits and operational notices", "url": "https://pancanal.com/maritime-services/",
+    },
+    {
+        "id": "suez-canal-scu", "region": "Egypt", "waterways": "Suez Canal",
+        "authority": "Suez Canal Authority", "access": "Official notices and navigation circulars",
+        "status": "connector_ready", "frequency": "Advisory",
+        "metrics": "Navigation circulars, convoy guidance and traffic notices", "url": "https://www.suezcanal.gov.eg/English/Navigation/Pages/NavigationCirculars.aspx",
+    },
+    {
+        "id": "kiel-canal-wsv", "region": "Germany", "waterways": "Kiel Canal",
+        "authority": "German Federal Waterways and Shipping Administration", "access": "Official notices portal",
+        "status": "connector_ready", "frequency": "Advisory",
+        "metrics": "Traffic restrictions, lock status and vessel notices", "url": "https://www.wsv.de/",
+    },
+    {
+        "id": "welland-canal-sls", "region": "Canada", "waterways": "Welland Canal",
+        "authority": "St. Lawrence Seaway Management Corporation", "access": "Official navigation notices",
+        "status": "connector_ready", "frequency": "Advisory",
+        "metrics": "Seaway notices, lock operations and navigation restrictions", "url": "https://greatlakes-seaway.com/en/navigation/",
+    },
 ]
+
+
+CANAL_RECORDS: List[Dict[str, Any]] = [
+    {
+        "id": "canal-panama", "station": "Panama Canal", "waterbody": "Panama Canal", "basin": "Panama Canal Watershed",
+        "country": "Panama", "latitude": 9.12, "longitude": -79.75, "source_name": "Panama Canal Authority",
+        "source_url": "https://pancanal.com/maritime-services/", "source_method": "Official advisories portal",
+        "navigation_status": "Advisory feed required for current queue and transit restrictions",
+        "navigation_note": "Use Panama Canal advisories for booking, draft and traffic restrictions.",
+        "quality_note": "This dashboard tracks the canal as a commercial corridor; live queue counts require the authority's advisory feed.",
+        "extra_metrics": {"Congestion status": "Live advisory required", "Transit delay": "Not published in this feed", "Queue / vessels": "Not published in this feed", "Related news query": "Panama Canal"},
+    },
+    {
+        "id": "canal-suez", "station": "Suez Canal", "waterbody": "Suez Canal", "basin": "Suez Canal Corridor",
+        "country": "Egypt", "latitude": 30.45, "longitude": 32.35, "source_name": "Suez Canal Authority",
+        "source_url": "https://www.suezcanal.gov.eg/English/Navigation/Pages/NavigationCirculars.aspx", "source_method": "Official navigation circulars",
+        "navigation_status": "Advisory feed required for current queue and transit restrictions",
+        "navigation_note": "Use Suez Canal Authority circulars and agent updates for convoy and traffic conditions.",
+        "quality_note": "Live queue counts are not published in the river-level feed and are shown as unavailable until connected.",
+        "extra_metrics": {"Congestion status": "Live advisory required", "Transit delay": "Not published in this feed", "Queue / vessels": "Not published in this feed", "Related news query": "Suez Canal"},
+    },
+    {
+        "id": "canal-kiel", "station": "Kiel Canal", "waterbody": "Kiel Canal", "basin": "North Sea–Baltic Corridor",
+        "country": "Germany", "latitude": 54.20, "longitude": 9.55, "source_name": "German Federal Waterways and Shipping Administration",
+        "source_url": "https://www.wsv.de/", "source_method": "Official notices portal",
+        "navigation_status": "Advisory feed required for lock and traffic restrictions",
+        "navigation_note": "Use WSV notices for lock availability, closures and vessel restrictions.",
+        "quality_note": "Live queue counts are not published in the river-level feed and are shown as unavailable until connected.",
+        "extra_metrics": {"Congestion status": "Live advisory required", "Transit delay": "Not published in this feed", "Queue / vessels": "Not published in this feed", "Related news query": "Kiel Canal"},
+    },
+    {
+        "id": "canal-welland", "station": "Welland Canal", "waterbody": "Welland Canal", "basin": "Great Lakes–St. Lawrence Corridor",
+        "country": "Canada", "latitude": 43.20, "longitude": -79.20, "source_name": "St. Lawrence Seaway Management Corporation",
+        "source_url": "https://greatlakes-seaway.com/en/navigation/", "source_method": "Official navigation notices",
+        "navigation_status": "Advisory feed required for lock and traffic restrictions",
+        "navigation_note": "Use Seaway notices for lock operations, drafts and navigation restrictions.",
+        "quality_note": "Live queue counts are not published in the river-level feed and are shown as unavailable until connected.",
+        "extra_metrics": {"Congestion status": "Live advisory required", "Transit delay": "Not published in this feed", "Queue / vessels": "Not published in this feed", "Related news query": "Welland Canal"},
+    },
+]
+
+
+def _canal_records() -> List[Dict[str, Any]]:
+    rows = []
+    for definition in CANAL_RECORDS:
+        row = dict(definition)
+        row.update({"waterbody_type": "canal", "observed_at": None, "level": None, "level_unit": None,
+                    "status": "monitoring", "status_label": "Operational monitoring profile", "trend": "unknown",
+                    "trend_value": None, "trend_unit": None, "forecast_level": None, "forecast_time": None,
+                    "freshness": "unknown", "gauge_datum": "Not applicable"})
+        row.update(_comparison_fields(None, [], "", ""))
+        rows.append(row)
+    return rows
 
 
 def _utc_now() -> datetime:
@@ -801,6 +882,7 @@ class RiverLevelManager:
             data = json.loads(self.cache_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 data["rows"] = filter_commercial_waterways(data.get("rows") or [])
+                data["rows"] = [row for row in data["rows"] if row.get("waterbody_type") != "canal"] + _canal_records()
                 data["sources"] = SOURCE_CATALOG
                 data["source_count"] = len(SOURCE_CATALOG)
                 data["connected_source_count"] = sum(
@@ -881,7 +963,7 @@ class RiverLevelManager:
             if not rows and self.payload.get("rows"):
                 self.last_error = "; ".join(errors) or "No official source returned data"
                 return self.payload
-            rows = filter_commercial_waterways(rows)
+            rows = filter_commercial_waterways(rows) + _canal_records()
             rows.sort(key=lambda row: (row.get("waterbody") or "", row.get("station") or ""))
             self.payload = {
                 "fetched_at": _iso_now(), "rows": rows, "sources": SOURCE_CATALOG,
