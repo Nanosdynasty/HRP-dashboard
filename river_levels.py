@@ -890,7 +890,15 @@ class RiverLevelManager:
                 )
                 self.payload = data
         except (FileNotFoundError, json.JSONDecodeError, OSError):
-            self.payload = {}
+            # Keep the operational canal directory available during a cold
+            # start while the slower gauge providers are being refreshed.
+            self.payload = {
+                "fetched_at": None, "rows": _canal_records(), "sources": SOURCE_CATALOG,
+                "errors": ["Gauge cache unavailable; refresh to load live river observations."],
+                "source_count": len(SOURCE_CATALOG),
+                "connected_source_count": 0,
+                "disclaimer": "Canal profiles are operational references; confirm authority advisories before use.",
+            }
 
     def _save(self) -> None:
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
