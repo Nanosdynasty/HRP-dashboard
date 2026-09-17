@@ -3730,16 +3730,11 @@ async def sea_route(req: RouteRequest):
         ) or _compute_route(
             route_from_lon, route_from_lat, route_to_lon, route_to_lat, speed, avoid
         )
-        # Screen piracy-watch envelopes automatically and measure the final
-        # rendered track, so the displayed distance matches the route line.
-        primary = (
-            baseline
-            if baseline.get("routing_profile") == "outer-jwc-boundary-corridor"
-            else _apply_local_piracy_detours(baseline, speed, avoid)
-        )
-        if primary.get("coordinates") == baseline.get("coordinates"):
-            # A clear route keeps its original profile and benchmark metadata.
-            primary = {**baseline, "risk_families_avoided": []}
+        # JWC and piracy features are risk-screening geometry.  They must not
+        # be used as route vertices: their published outlines are deliberately
+        # coarse and can cross land.  Keep the maritime-network track intact;
+        # only explicitly reviewed, water-only corridor fixtures may replace it.
+        primary = {**baseline, "risk_families_avoided": []}
         primary["distance_nm"] = round(_polyline_distance_nm(primary.get("coordinates") or []), 1)
         calm_sea_hours = primary["distance_nm"] / speed
         sea_margin_hours = calm_sea_hours * sea_margin_pct / 100.0
@@ -3814,7 +3809,7 @@ async def sea_route(req: RouteRequest):
                 "A selected port is more than 20 nm from the nearest network node; review the connector leg."
             )
         if zone_summary.get("piracy_zones"):
-            warnings.append("Piracy-watch areas were screened and avoided where a detour was available.")
+            warnings.append("Piracy-watch exposure is highlighted. The maritime-network track was kept because coarse risk boundaries are not safe routing geometry.")
         if zone_summary.get("jwc_zones"):
             warnings.append("JWC listed-area exposure is advisory; review the latest circular before sailing.")
         if zone_summary.get("eca_zones"):
@@ -3849,9 +3844,11 @@ async def sea_route(req: RouteRequest):
             ),
             "zones": zone_summary,
             "risk_avoidance": {
-                "piracy": True,
-                "jwc": bool(req.avoid_jwc),
-                "policy": "automatic_piracy_avoidance",
+                "piracy": False,
+                "jwc": False,
+                "requested_piracy_avoidance": bool(req.avoid_piracy),
+                "requested_jwc_avoidance": bool(req.avoid_jwc),
+                "policy": "maritime_network_with_exposure_screening",
             },
         }
         if alt and alt["distance_nm"] > primary["distance_nm"]:

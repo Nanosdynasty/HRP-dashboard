@@ -288,6 +288,10 @@ class PortApiTests(unittest.TestCase):
                     }
                 ),
             ),
+            patch(
+                "app._apply_local_piracy_detours",
+                side_effect=AssertionError("coarse zone outlines must not become route legs"),
+            ),
         ):
             response = self.client.post(
                 "/api/route",
@@ -311,6 +315,10 @@ class PortApiTests(unittest.TestCase):
         self.assertAlmostEqual(payload["distance_nm"], baseline["distance_nm"], delta=1)
         self.assertIn("zones", payload)
         self.assertIn("risk_avoidance", payload)
+        self.assertEqual(
+            payload["risk_avoidance"]["policy"],
+            "maritime_network_with_exposure_screening",
+        )
 
     def test_nacala_yanbu_has_no_mandatory_risk_waypoints(self):
         route = _compute_route(
