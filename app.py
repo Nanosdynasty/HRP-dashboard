@@ -2082,6 +2082,7 @@ def _compute_beira_port_sudan_corridor(from_id, to_id, speed_knots):
     coordinates = _densify_geodesic_route(
         [origin, *waypoints, destination], max_leg_nm=30.0
     )
+    coordinates = _smooth_route_turns(coordinates)
     distance_nm = _polyline_distance_nm(coordinates)
     direct_nm = _haversine_nm(origin, destination)
     duration_hours = distance_nm / speed_knots if speed_knots > 0 else 0.0
@@ -2272,6 +2273,37 @@ def _join_coordinate_parts(*parts: List[List[float]]) -> List[List[float]]:
     return output
 
 
+def _smooth_route_turns(coordinates: List[List[float]], max_turn_deg: float = 35.0) -> List[List[float]]:
+    """Fillet sharp route vertices so no displayed course change is abrupt."""
+    points = [[float(p[0]), float(p[1])] for p in coordinates]
+    for _ in range(4):
+        changed = False
+        output = [points[0]] if points else []
+        for index in range(1, len(points) - 1):
+            previous, vertex, following = points[index - 1:index + 2]
+            def bearing(left, right):
+                delta = math.radians(right[0] - left[0])
+                y = math.sin(delta) * math.cos(math.radians(right[1]))
+                x = (math.cos(math.radians(left[1])) * math.sin(math.radians(right[1]))
+                     - math.sin(math.radians(left[1])) * math.cos(math.radians(right[1])) * math.cos(delta))
+                return math.degrees(math.atan2(y, x))
+            turn = abs((bearing(previous, vertex) - bearing(vertex, following) + 180) % 360 - 180)
+            if turn > max_turn_deg:
+                output.extend([
+                    _geodesic_point(previous, vertex, 0.72),
+                    _geodesic_point(vertex, following, 0.28),
+                ])
+                changed = True
+            else:
+                output.append(vertex)
+        if points:
+            output.append(points[-1])
+        points = output
+        if not changed:
+            break
+    return points
+
+
 def _geometry_coordinates(geometry) -> List[List[float]]:
     if geometry.is_empty:
         return []
@@ -2323,10 +2355,12 @@ def _piracy_boundary_arc(polygon, entry, exit, preference: Optional[str]):
 
 def _piracy_avoidance_polygon(polygon, properties: Dict[str, Any]):
     """Return the displayed piracy boundary used by the route engine."""
-    buffer_nm = max(0.0, float(properties.get("avoidance_buffer_nm") or 0.0))
-    if buffer_nm <= 0:
-        return polygon
-    return polygon.buffer(buffer_nm / 60.0, join_style=2)
+    # A zero-width polygon produces square corners and impossible course
+    # changes when the route follows its exterior. Use a small rounded
+    # offshore buffer even when the source does not prescribe one.
+    configured_nm = max(0.0, float(properties.get("avoidance_buffer_nm") or 0.0))
+    buffer_nm = max(12.0, configured_nm)
+    return polygon.buffer(buffer_nm / 60.0, join_style=1)
 
 
 def _mandatory_piracy_detour(
@@ -2425,6 +2459,7 @@ def _result_with_replaced_coordinates(
         normalized = [float(point[0]), float(point[1])]
         if not deduplicated or _haversine_nm(deduplicated[-1], normalized) > 0.001:
             deduplicated.append(normalized)
+    deduplicated = _smooth_route_turns(deduplicated)
     distance_nm = _polyline_distance_nm(deduplicated)
     direct_nm = float(baseline.get("great_circle_nm") or 0.0)
     duration_hours = distance_nm / speed_knots if speed_knots > 0 else 0.0
