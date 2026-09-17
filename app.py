@@ -93,6 +93,13 @@ INDIA_POWER_MIX_PATH = (
 )
 PORT_APPROACHES_PATH = DATA_DIR / "port_approaches.json"
 RISK_ZONE_SOURCE_PATH = DATA_DIR / "zones_source.json"
+ROUTING_KNOWLEDGE_BASE_PATH = DATA_DIR / "routing_knowledge_base.json"
+
+
+@lru_cache(maxsize=1)
+def _routing_knowledge_base() -> Dict[str, Any]:
+    """Load the versioned evidence and active policy for analytical routes."""
+    return json.loads(ROUTING_KNOWLEDGE_BASE_PATH.read_text(encoding="utf-8"))
 
 # Exact location-level matches that have been checked against the official CEA
 # station register.  Keeping this explicit prevents a fuzzy name match from
@@ -3672,6 +3679,11 @@ async def get_zones():
         "features": payload.get("features", []),
     }
 
+@app.get("/api/routing/knowledge-base")
+async def routing_knowledge_base():
+    """Expose the source-backed routing policy used by route responses."""
+    return _routing_knowledge_base()
+
 @app.get("/api/weather")
 async def weather(lat: float = Query(...), lon: float = Query(...)):
     return await fetch_weather(lat, lon)
@@ -3814,6 +3826,7 @@ async def sea_route(req: RouteRequest):
             warnings.append("JWC listed-area exposure is advisory; review the latest circular before sailing.")
         if zone_summary.get("eca_zones"):
             warnings.append("Route intersects an IMO ECA; verify MARPOL fuel and reporting requirements.")
+        routing_knowledge = _routing_knowledge_base()
         result = {
             **primary,
             "from_name": from_name,
@@ -3849,6 +3862,12 @@ async def sea_route(req: RouteRequest):
                 "requested_piracy_avoidance": bool(req.avoid_piracy),
                 "requested_jwc_avoidance": bool(req.avoid_jwc),
                 "policy": "maritime_network_with_exposure_screening",
+            },
+            "route_engine": {
+                "policy_id": routing_knowledge["active_policy"]["id"],
+                "knowledge_base_version": routing_knowledge["schema_version"],
+                "base_path": routing_knowledge["active_policy"]["base_path"],
+                "validation": routing_knowledge["active_policy"]["validation"],
             },
         }
         if alt and alt["distance_nm"] > primary["distance_nm"]:

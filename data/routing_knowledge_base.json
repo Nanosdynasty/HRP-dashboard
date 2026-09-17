@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0.0",
+  "updated_at": "2026-09-17",
+  "scope": "Analytical berth-to-berth voyage planning. This application is not an ECDIS or a navigational authority.",
+  "active_policy": {
+    "id": "maritime-network-screening-v1",
+    "base_path": "A* maritime-network route with sea-side endpoint connectors",
+    "hard_constraints": ["Never derive route legs from display or risk-polygon boundaries.", "Reject missing maritime-network geometry.", "Retain exact endpoint connectors and measure the displayed polyline.", "Only use reviewed, named water-only corridor fixtures as route replacements."],
+    "soft_constraints": ["JWC and piracy-watch features are exposure overlays until a reviewed water-only avoidance corridor is available.", "ECA exposure is measured and reported; it is not converted into a rectangular detour.", "Canal and passage restrictions are passed to the maritime network."],
+    "validation": ["Polyline distance is recomputed from returned coordinates.", "Route profile and policy are returned with each result.", "Regression test blocks the retired coarse JWC boundary detour."]
+  },
+  "provider_patterns": [
+    {"provider":"Searoutes","pattern":"Shortest feasible sea route accounts for traffic-separation schemes and port entries; supports vessel dimensions/draft, speed limits, HRA/ECA preferences, blocked areas, and crossed-area reporting.","source_url":"https://developer.searoutes.com/reference/getsearoute"},
+    {"provider":"Veson Nautical","pattern":"Routing templates and passages are selected at company or vessel level; weather layers are displayed separately from route options.","source_url":"https://help.veson.com/vms/maps-routing-and-weather"},
+    {"provider":"Wartsila Navi-Planner","pattern":"Builds berth-to-berth passage plans with chart updates, weather and risk overlays, automated route generation, validation, and shore-to-bridge consistency.","source_url":"https://www.wartsila.com/marine/products/marine-navigation-solutions/navi-planner"},
+    {"provider":"StormGeo","pattern":"Optimizes against safety, ETA, fuel, emissions and commercial goals using vessel-specific constraints, frequent weather updates, and expert review.","source_url":"https://stormgeo.com/products/voyage-optimization"},
+    {"provider":"International Maritime Organization","pattern":"Defines traffic separation schemes, recommended tracks, deep-water routes, precautionary areas and areas to be avoided; weather routing supports safety but is not a substitute for navigation.","source_url":"https://www.imo.org/en/ourwork/safety/pages/shipsrouteing.aspx"}
+  ],
+  "implementation_plan": [
+    {"phase":1,"status":"implemented","work":"Water-network-first routing. Removed coarse JWC boundary routing, retain the reviewed Beira-Port Sudan corridor, recompute displayed distance, and disclose policy."},
+    {"phase":2,"status":"next","work":"License or integrate authoritative ENC/bathymetry and IMO routeing layers; validate every segment against that navigational dataset and return a validation report."},
+    {"phase":3,"status":"next","work":"Add vessel IMO, draft, air draft, speed profile, departure time, canal rules and reviewable route templates."},
+    {"phase":4,"status":"next","work":"Add forecast-driven alternatives, weather and current penalties, fuel/emissions objectives, rerouting cadence and master/shore approval workflow."}
+  ]
+}

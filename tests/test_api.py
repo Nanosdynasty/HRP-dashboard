@@ -40,6 +40,16 @@ class PortApiTests(unittest.TestCase):
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         self.assertIn("default-src 'self'", response.headers["content-security-policy"])
 
+    def test_routing_knowledge_base_exposes_active_policy_and_sources(self):
+        response = self.client.get("/api/routing/knowledge-base")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["schema_version"], "1.0.0")
+        self.assertEqual(
+            payload["active_policy"]["id"],
+            "maritime-network-screening-v1",
+        )
+        self.assertGreaterEqual(len(payload["provider_patterns"]), 5)
     def test_admin_write_endpoint_rejects_missing_token_when_configured(self):
         with patch.object(app_module, "ADMIN_API_TOKEN", "test-admin-secret"), patch.object(
             app_module, "REQUIRE_ADMIN_TOKEN", True
@@ -315,6 +325,10 @@ class PortApiTests(unittest.TestCase):
         self.assertAlmostEqual(payload["distance_nm"], baseline["distance_nm"], delta=1)
         self.assertIn("zones", payload)
         self.assertIn("risk_avoidance", payload)
+        self.assertEqual(
+            payload["route_engine"]["policy_id"],
+            "maritime-network-screening-v1",
+        )
         self.assertEqual(
             payload["risk_avoidance"]["policy"],
             "maritime_network_with_exposure_screening",
