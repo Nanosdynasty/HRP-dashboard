@@ -1,0 +1,70 @@
+[
+  {
+    "id": "demo-anchorage",
+    "port_id": "synthetic-port",
+    "name": "demo-anchorage",
+    "kind": "anchorage",
+    "source": "Synthetic test polygons; not official harbour limits",
+    "geometry": {
+      "type": "Polygon",
+      "coordinates": [
+        [
+          [
+            72.89,
+            18.88
+          ],
+          [
+            72.93,
+            18.88
+          ],
+          [
+            72.93,
+            18.92
+          ],
+          [
+            72.89,
+            18.92
+          ],
+          [
+            72.89,
+            18.88
+          ]
+        ]
+      ]
+    }
+  },
+  {
+    "id": "demo-port",
+    "port_id": "synthetic-port",
+    "name": "demo-port",
+    "kind": "port",
+    "source": "Synthetic test polygons; not official harbour limits",
+    "geometry": {
+      "type": "Polygon",
+      "coordinates": [
+        [
+          [
+            72.94,
+            18.88
+          ],
+          [
+            72.98,
+            18.88
+          ],
+          [
+            72.98,
+            18.92
+          ],
+          [
+            72.94,
+            18.92
+          ],
+          [
+            72.94,
+            18.88
+          ]
+        ]
+      ]
+    }
+  }
+]

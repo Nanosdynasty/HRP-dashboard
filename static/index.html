@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Howe Robinson | Global Assets Map</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="/static/css/style.css?v=20260915-tabs-bmkg-1" />
+  <link rel="stylesheet" href="/static/css/style.css?v=20260928-intelligence" />
+  <link rel="stylesheet" href="/static/css/voyage-activity.css?v=20260928-voyage-activity" />
+  <link rel="stylesheet" href="/static/auth/auth.css" />
 </head>
 <body>
   <div class="app-shell">
@@ -14,8 +16,21 @@
         <img src="/static/img/howe-robinson-logo.svg" alt="Howe Robinson Partners" />
         <p>Global assets &amp; voyage intelligence</p>
       </header>
+      <div id="account-controls" class="account-controls" hidden>
+        <span id="account-label"></span>
+        <button id="access-open" type="button" hidden>Manage access</button>
+        <button id="account-logout" type="button">Sign out</button>
+      </div>
 
       <div class="panel-scroll">
+        <details class="filter-section" data-mode="voyage-analysis">
+          <summary><span>Voyage &amp; Tonne-Miles</span><span class="section-count">Model</span></summary>
+          <p class="source-note">Sea distance, voyage days and cargo tonne-miles. Compare origins and export scenarios.</p>
+        </details>
+        <details class="filter-section" data-mode="port-activity">
+          <summary><span>AIS &amp; Port Activity</span><span class="section-count">History</span></summary>
+          <p class="source-note">Authorized decoded AIS uploads and collected history. Polygon visits and vessel audit.</p>
+        </details>
         <details class="filter-section" data-mode="energy">
           <summary>
             <span><i class="section-icon energy-icon"></i>Energy</span>
@@ -250,22 +265,6 @@
           </div>
         </details>
 
-        <details class="filter-section gtt-section" data-mode="gtt">
-          <summary>
-            <span><i class="section-icon gtt-icon"></i>GTT Trade Intelligence</span>
-            <span class="section-count" id="gtt-sidebar-status">Awaiting data</span>
-          </summary>
-          <div class="section-body">
-            <p class="workspace-intro">Explore, compare and govern GTT trade data using the app's shared master store.</p>
-            <div class="gtt-mini-status">
-              <div><span>GTT datasets</span><strong id="gtt-sidebar-datasets">0</strong></div>
-              <div><span>Validated rows</span><strong id="gtt-sidebar-rows">0</strong></div>
-            </div>
-            <button type="button" class="filter-button" id="gtt-open-workspace">Open GTT workspace</button>
-            <p class="source-note">Charts remain empty until a profiled GTT file or connector supplies source-backed records.</p>
-          </div>
-        </details>
-
         <details class="filter-section news-section" data-mode="news">
           <summary>
             <span><i class="section-icon news-icon"></i>News intelligence</span>
@@ -286,23 +285,6 @@
             </div>
             <button type="button" class="filter-button" id="news-open-workspace">Open news workspace</button>
             <p class="source-note">Provider feed is filtered on the server; article links always open at the originating publisher.</p>
-          </div>
-        </details>
-
-        <details class="filter-section datahub-section" data-mode="datahub">
-          <summary>
-            <span><i class="section-icon datahub-icon"></i>Data Hub</span>
-            <span class="section-count" id="datahub-sidebar-status">Master store</span>
-          </summary>
-          <div class="section-body">
-            <p class="workspace-intro">Upload, connect, reconcile and compare licensed or custom market datasets in one governed workspace.</p>
-            <div class="datahub-mini-status">
-              <div><span>Datasets</span><strong id="datahub-sidebar-datasets">0</strong></div>
-              <div><span>Rows</span><strong id="datahub-sidebar-rows">0</strong></div>
-              <div><span>Updates due</span><strong id="datahub-sidebar-due">0</strong></div>
-            </div>
-            <button type="button" class="filter-button" id="datahub-open-workspace">Open data workspace</button>
-            <p class="source-note">Relationship proposals remain inactive until a user reviews and approves the suggested keys, grain and coverage.</p>
           </div>
         </details>
 
@@ -434,6 +416,7 @@
               <button type="button" data-weather-view="table">Table</button>
               <button type="button" data-weather-view="cards">Cards</button>
               <button type="button" data-weather-view="disruptions">Port disruptions</button>
+              <button type="button" data-weather-view="outlook">Outlook</button>
             </div>
             <label class="weather-field" for="coastal-weather-location-type">
               <span>Forecast coverage</span>
@@ -602,7 +585,7 @@
               <legend>Map overlays</legend>
               <label><input id="show-jwc-zones" type="checkbox" />JWC listed areas</label>
               <label><input id="show-piracy-zones" type="checkbox" />Piracy watch areas</label>
-              <label><input id="show-eca-zones" type="checkbox" />IMO ECA regions (screening)</label>
+              <label><input id="show-eca-zones" type="checkbox" />IMO ECA / SECA water areas</label>
             </fieldset>
             <div id="route-result" class="route-result">Click the button, then choose two port dots.</div>
           </div>
@@ -611,6 +594,8 @@
     </aside>
 
     <main class="map-panel">
+      <section id="voyage-analysis-surface" class="analyst-surface" hidden aria-label="Voyage and tonne-mile analysis"></section>
+      <section id="port-activity-surface" class="analyst-surface" hidden aria-label="AIS and port activity"></section>
       <div id="map"></div>
       <section id="weather-data-surface" class="weather-data-surface" hidden>
         <header class="weather-surface-header">
@@ -627,6 +612,25 @@
         <div id="weather-workspace-table" class="weather-workspace-table"></div>
         <div id="weather-workspace-cards" class="weather-workspace-cards" hidden></div>
         <div id="port-disruption-workspace" class="port-disruption-workspace" hidden></div>
+        <div id="port-outlook-workspace" hidden>
+          <p class="outlook-method">Potential disruption, 0–24h and 24–72h. Weather screening and authority restrictions are separate. Wind ≥22 kt and waves ≥2.5 m are watch conditions, not shutdown rules. Actual status is “Not reported” unless a fresh, scoped authority notice confirms a restriction.</p>
+          <form id="outlook-filters" class="outlook-filters">
+            <label>Port<input name="port" type="search" placeholder="Name or stable ID"></label>
+            <label>Country<input name="country" placeholder="Country or ISO code"></label>
+            <label>Commodity<input name="commodity" placeholder="Documented cargo"></label>
+            <label>Operation<select name="operation"><option value="">All operations</option><option>loading/discharge</option><option>crane operations</option><option>berthing</option><option>pilotage</option><option>anchorage</option><option>approach</option></select></label>
+            <label>Assessment<select name="assessment"><option value="">All assessments</option><option>Confirmed restriction</option><option>Published limit exceeded</option><option>Weather watch</option><option>No trigger identified</option><option>Not assessed</option></select></label>
+            <label>Forecast window<select name="forecast_window"><option value="">Both horizons</option><option value="0-24">0–24 hours</option><option value="24-72">24–72 hours</option></select></label>
+            <button type="submit">Apply filters</button><button type="button" id="outlook-refresh">Refresh view</button><button type="button" id="outlook-export">CSV · filtered rows</button>
+          </form>
+          <p id="outlook-status" role="status" aria-live="polite"></p>
+          <div class="outlook-legend"><span class="outlook-confirmed">● Confirmed restriction</span><span class="outlook-limit">● Published limit exceeded</span><span class="outlook-watch">● Weather watch</span><span>● Not assessed</span><span class="outlook-clear">● No trigger identified</span></div>
+          <div id="outlook-map" aria-label="Filtered dry-bulk port disruption outlook map"></div>
+          <div id="outlook-detail" hidden></div>
+          <div id="outlook-table" class="outlook-table"></div>
+          <div id="outlook-pagination" class="outlook-pagination"></div>
+          <details class="outlook-evidence"><summary>Source checks, matching and historical forecasts</summary><div id="outlook-source-status"></div><button type="button" id="outlook-history-load">Load labelled historical forecasts</button><div id="outlook-history"></div></details>
+        </div>
       </section>
       <section id="river-data-surface" class="river-data-surface" hidden>
         <header class="river-surface-header">
@@ -653,21 +657,26 @@
           <div>
             <span>MARKET NEWS / CURATED SIGNALS</span>
             <h1>News intelligence</h1>
-            <p id="news-subtitle">Only commercial dry-bulk signals with a chartering, vessel, port-operational, cargo-flow or navigational-weather impact.</p>
+            <p id="news-subtitle">Shipping, commodities, ports, policy and official research · source-backed archive</p>
           </div>
           <div class="news-surface-actions">
-            <label>Search<input id="news-search" type="search" placeholder="Search loaded headlines" /></label>
+            <label>Search<input id="news-search" type="search" placeholder="Search the collected archive" /></label>
             <button type="button" id="news-refresh">Refresh feed</button>
           </div>
         </header>
-        <nav id="news-topic-tabs" class="news-topic-tabs" aria-label="News topic filters">
-          <button type="button" class="active" data-news-topic="all">All signals</button>
-          <button type="button" data-news-topic="chartering">Chartering &amp; freight</button>
-          <button type="button" data-news-topic="dry_bulk">Dry bulk freight</button>
-          <button type="button" data-news-topic="ports">Ports &amp; operations</button>
-          <button type="button" data-news-topic="cargo_trade">Bulk cargo flows</button>
-          <button type="button" data-news-topic="weather">Navigational weather</button>
+        <nav id="news-topic-tabs" class="news-topic-tabs" aria-label="Intelligence views">
+          <button data-intelligence-view="overview" class="active">Overview</button><button data-intelligence-view="latest">Latest news</button><button data-intelligence-view="chartering">Freight &amp; chartering</button><button data-intelligence-view="cargo_trade">Commodities &amp; trade</button><button data-intelligence-view="ports">Ports &amp; disruptions</button><button data-intelligence-view="fleet_snp">Fleet &amp; shipyards</button><button data-intelligence-view="policy">Policy</button><button data-intelligence-view="reports">Reports &amp; research</button><button data-intelligence-view="brief">Intelligence briefs</button><button data-intelligence-view="sources">Sources &amp; coverage</button><button data-intelligence-view="bookmarks">Bookmarks</button>
         </nav>
+        <form id="intelligence-filters" class="intelligence-filters">
+          <label>Publication window<select name="days"><option value="1">24 hours</option><option value="3">72 hours</option><option value="7" selected>7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="0">Entire collected archive</option></select></label>
+          <label>From<input name="start" type="date"></label><label>Through<input name="end" type="date"></label>
+          <label>Country<select name="country"><option value="">All countries</option></select></label><label>Commodity<select name="commodity_group"><option value="all">All commodities</option></select></label><label>Port / canal<select name="port"><option value="">All mentions</option></select></label>
+          <label>Vessel class<select name="vessel"><option value="">All classes</option></select></label><label>Publisher<select name="publisher"><option value="">All publishers</option></select></label><label>Language<select name="language"><option value="">All original languages</option></select></label>
+          <label>Sort<select name="sort"><option value="newest">Newest</option><option value="relevance">Relevance</option><option value="source">Publisher</option><option value="updated">Last discovered update</option></select></label><label>Per page<select name="page_size"><option>25</option><option>50</option><option>100</option></select></label>
+          <button type="submit">Apply filters</button><button type="button" id="intelligence-save-view">Save view</button><button type="button" id="intelligence-reset">Reset</button><label>Saved views<select id="intelligence-saved"><option value="">Choose a saved view</option></select></label><a id="intelligence-export" href="#">Export displayed results CSV</a>
+        </form>
+        <div id="intelligence-update" hidden><button id="intelligence-new-items">New items available — update view</button></div>
+        <p id="intelligence-status" role="status"></p>
         <div id="news-metrics" class="news-metrics"></div>
         <div id="news-feed" class="news-feed"></div>
       </section>
@@ -737,6 +746,7 @@
             </select>
           </div>
           <button type="button" id="coal-analysis-apply">Apply filters</button>
+          <button type="button" id="coal-analysis-refresh">Refresh official snapshot</button>
           <a id="coal-dashboard-csv" href="#" download>CSV</a>
           <a id="coal-dashboard-xlsx" href="#" download>Excel</a>
         </div>
@@ -835,199 +845,6 @@
         </div>
         <p id="npp-quality-note" class="npp-quality-note">Values display only after category and sector totals reconcile to the NPP installed-capacity headline.</p>
       </section>
-      <section id="gtt-surface" class="gtt-surface" hidden>
-        <aside class="gtt-app-sidebar" aria-label="GTT Trade Intelligence navigation">
-          <div class="gtt-nav-brand"><b>GTT</b><span>Trade<br>Intelligence</span></div>
-          <button type="button" id="gtt-back-main" class="gtt-back-main">← Back to main app</button>
-          <small>TRADE INTELLIGENCE</small>
-          <nav class="gtt-nav">
-            <button type="button" class="active" data-gtt-tab="overview"><i>⌂</i><span>Overview</span></button>
-            <button type="button" data-gtt-tab="explore"><i>⌕</i><span>Trade Explorer</span></button>
-            <button type="button" data-gtt-tab="compare"><i>◫</i><span>Market Explorer</span></button>
-            <button type="button" data-gtt-tab="compare"><i>⇄</i><span>Compare Lab</span></button>
-            <button type="button" data-gtt-tab="explore"><i>◇</i><span>Commodities</span></button>
-            <button type="button" data-gtt-tab="explore"><i>◎</i><span>Countries</span></button>
-            <button type="button" data-gtt-tab="explore"><i>◈</i><span>Vessels</span></button>
-            <button type="button" data-gtt-tab="insights"><i>▤</i><span>Reports</span></button>
-            <button type="button" data-gtt-tab="admin"><i>◉</i><span>Alerts</span></button>
-            <button type="button" data-gtt-tab="groups"><i>⊙</i><span>Groups</span></button>
-            <button type="button" data-gtt-tab="insights"><i>✦</i><span>AI Insights</span></button>
-          </nav>
-          <small>DATA MANAGEMENT</small>
-          <nav class="gtt-nav gtt-nav-secondary">
-            <button type="button" data-gtt-tab="uploads"><i>⇧</i><span>Uploads</span></button>
-            <button type="button" data-gtt-tab="admin"><i>⚙</i><span>Sources &amp; Admin</span></button>
-          </nav>
-          <div class="gtt-nav-footer"><span>GTT workspace</span><strong id="gtt-nav-footer-status">Source-backed analytics</strong></div>
-        </aside>
-        <header class="gtt-workspace-header">
-          <div><span>GTT / TRADE INTELLIGENCE</span><h1>Global Trade Dashboard</h1><p>Validated trade records, governed comparisons and evidence-aware research.</p></div>
-          <div class="gtt-header-status"><span>DATA STATUS</span><strong id="gtt-header-status">Awaiting validated GTT data</strong><small id="gtt-header-coverage">No reporting coverage</small></div>
-        </header>
-        <div class="gtt-filter-bar" aria-label="GTT workspace filters">
-          <label>Trade flow<select id="gtt-flow-filter"><option value="">Imports &amp; exports</option><option value="import">Imports</option><option value="export">Exports</option></select></label>
-          <label>Exporter country<select id="gtt-exporter-filter"><option value="">All exporters</option></select></label>
-          <label>Importer country<select id="gtt-importer-filter"><option value="">All importers</option></select></label>
-          <label>HS code<select id="gtt-hs-filter"><option value="">All HS codes</option></select></label>
-          <label>From year<select id="gtt-year-from"><option value="">Earliest available</option></select></label>
-          <label>To year<select id="gtt-year-to"><option value="">Latest available</option></select></label>
-          <label>Frequency<select id="gtt-frequency-filter"><option value="">All frequencies</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Annual</option></select></label>
-          <label>Metric<select id="gtt-metric-filter"><option value="quantity">Quantity</option><option value="value">Trade value</option><option value="unit_value">Unit value</option></select></label>
-          <label>Unit<select id="gtt-unit-filter"><option value="mt">Metric tonnes</option><option value="usd">USD</option></select></label>
-          <button type="button" id="gtt-reset-filters">Reset</button>
-        </div>
-        <main class="gtt-workspace">
-          <section data-gtt-panel="overview">
-            <div class="gtt-kpis">
-              <article><span>Total quantity</span><strong id="gtt-kpi-datasets">—</strong><small>Metric tonnes in selected source</small></article>
-              <article><span>Normalized rows</span><strong id="gtt-kpi-rows">—</strong><small>Validated records</small></article>
-              <article><span>Reporter countries</span><strong id="gtt-kpi-coverage">—</strong><small>Distinct reporting markets</small></article>
-              <article><span>Partner countries</span><strong id="gtt-kpi-latest">—</strong><small>Distinct bilateral partners</small></article>
-              <article><span>Data coverage</span><strong id="gtt-kpi-quality">—</strong><small>Observed source periods</small></article>
-            </div>
-            <div class="gtt-dashboard-grid gtt-country-dashboard">
-              <article class="gtt-panel gtt-country-profile"><header><div><span>COUNTRY PROFILE</span><h2 id="gtt-country-name">Selected country</h2><p id="gtt-country-subtitle">Choose an exporter or importer to analyse trade.</p></div></header><div id="gtt-country-profile-content" class="gtt-country-profile-content"></div></article>
-              <article class="gtt-panel gtt-trade-map-panel"><header><div><span>TRADE FLOWS</span><h2>Interactive world trade map</h2><p>Exporter and importer countries remain visible; active markets use solid colours. Hover or select a country for trade detail.</p></div><div class="gtt-panel-tools"><label>Map side<select id="gtt-map-side"><option value="exporter">Exporter</option><option value="importer">Importer</option></select></label><label>View<select id="gtt-map-view"><option value="flows">Trade flows</option><option value="countries">Country totals</option></select></label></div></header><div id="gtt-trade-map" class="gtt-trade-map" aria-label="Interactive exporter and importer trade map"></div><div id="gtt-trade-map-card" class="gtt-map-card" hidden></div></article>
-              <article class="gtt-panel gtt-trend-panel"><header><div><span>IMPORTS VS EXPORTS</span><h2>Monthly reported quantity</h2><p>Y axis: quantity (metric tonnes) · X axis: reporting month</p></div><div class="gtt-panel-tools"><b id="gtt-chart-source"></b><label>View<select data-gtt-chart-mode="trend"><option value="line">Line</option><option value="bar">Bars</option><option value="area">Area</option><option value="scatter">Scatter</option><option value="step">Step line</option><option value="lollipop">Lollipop</option><option value="dot">Dot plot</option><option value="histogram">Histogram</option><option value="pie">Pie</option><option value="heatmap">Heatmap</option><option value="table">Table</option></select></label></div></header><div id="gtt-overview-chart" class="gtt-chart"></div></article>
-              <article class="gtt-panel"><header><div><span>TOP DESTINATIONS</span><h2>Partner-country ranking</h2><p>Quantity in metric tonnes</p></div><label>View<select data-gtt-chart-mode="partners"><option value="bars">Bars</option><option value="line">Line</option><option value="area">Area</option><option value="scatter">Scatter</option><option value="step">Step line</option><option value="lollipop">Lollipop</option><option value="dot">Dot plot</option><option value="histogram">Histogram</option><option value="pie">Pie</option><option value="heatmap">Heatmap</option><option value="table">Table</option></select></label></header><div id="gtt-top-datasets" class="gtt-ranked-list"></div></article>
-              <article class="gtt-panel"><header><div><span>TOP REPORTERS</span><h2>Reporting-country ranking</h2><p>Quantity in metric tonnes</p></div><label>View<select data-gtt-chart-mode="reporters"><option value="bars">Bars</option><option value="line">Line</option><option value="area">Area</option><option value="scatter">Scatter</option><option value="step">Step line</option><option value="lollipop">Lollipop</option><option value="dot">Dot plot</option><option value="histogram">Histogram</option><option value="pie">Pie</option><option value="heatmap">Heatmap</option><option value="table">Table</option></select></label></header><div id="gtt-freshness-summary" class="gtt-ranked-list"></div></article>
-              <article class="gtt-panel"><header><div><span>COMMODITY MIX</span><h2>Top commodities</h2><p>Share of selected source quantity</p></div><label>View<select data-gtt-chart-mode="commodities"><option value="bars">Bars</option><option value="line">Line</option><option value="area">Area</option><option value="scatter">Scatter</option><option value="step">Step line</option><option value="lollipop">Lollipop</option><option value="dot">Dot plot</option><option value="histogram">Histogram</option><option value="pie">Pie</option><option value="heatmap">Heatmap</option><option value="table">Table</option></select></label></header><div id="gtt-top-commodities" class="gtt-ranked-list"></div></article>
-              <article class="gtt-panel"><header><div><span>PERIOD CHECK</span><h2>Latest movement</h2><p>Most recent observed periods in the selected range</p></div></header><div id="gtt-period-summary" class="gtt-period-summary"></div></article>
-            </div>
-          </section>
-          <section data-gtt-panel="explore" hidden>
-            <header class="gtt-section-heading"><div><span>GOVERNED EXPLORATION</span><h2>Country, commodity and bilateral datasets</h2><p>Open a source to choose explicit X/Y fields, inspect records and export the normalized data.</p></div></header>
-            <div class="gtt-view-switch"><button type="button" class="active">Country</button><button type="button">Commodity / HS code</button><button type="button">Bilateral flow</button></div>
-            <div id="gtt-explore-catalog" class="gtt-catalog"></div>
-          </section>
-          <section data-gtt-panel="compare" hidden>
-            <header class="gtt-section-heading"><div><span>COMPARE LAB</span><h2>Compare up to four validated series</h2><p>Coverage and schema are checked before a relationship can be proposed.</p></div></header>
-            <div class="gtt-compare-layout">
-              <div class="gtt-compare-builder"><label>Series to compare<select id="gtt-compare-datasets" multiple size="8"></select></label><button type="button" id="gtt-run-compare">Compare selected series</button><small>Use Ctrl or Cmd to select two to four datasets.</small></div>
-              <div id="gtt-compare-result" class="gtt-compare-result"><div class="gtt-empty"><strong>No comparison selected</strong><span>Select validated GTT datasets to compare coverage, row counts, missingness and shared fields.</span></div></div>
-            </div>
-          </section>
-          <section data-gtt-panel="groups" hidden>
-            <header class="gtt-section-heading"><div><span>REUSABLE DEFINITIONS</span><h2>Country and HS-code groups</h2><p>Private and shared, versioned groups are created only from loaded master dimensions.</p></div></header>
-            <div id="gtt-groups-content" class="gtt-gated-card"></div>
-          </section>
-          <section data-gtt-panel="insights" hidden>
-            <header class="gtt-section-heading"><div><span>AI RESEARCH &amp; PUBLISHING</span><h2>Evidence-first analytical insights</h2><p>User-triggered analysis is limited to validated aggregates and must retain citations and reviewer status.</p></div></header>
-            <div id="gtt-insights-content" class="gtt-gated-card"></div>
-          </section>
-          <section data-gtt-panel="uploads" hidden>
-            <header class="gtt-section-heading"><div><span>GOVERNED INGESTION</span><h2>GTT uploads and connector</h2><p>Uploaded → Profiling → Mapping → Validating → Ready to publish.</p></div><button type="button" class="gtt-primary-action" id="gtt-upload-file">Upload GTT file</button></header>
-            <div class="gtt-upload-grid">
-              <article><span>FILE INGESTION</span><h3>GTT CSV, Excel, JSON or PDF</h3><p>Files are normalized into the shared master store with schema, missingness, duplicate and date coverage checks.</p><button type="button" id="gtt-upload-file-secondary">Choose file</button></article>
-              <article><span>API CONNECTOR</span><h3>Connect licensed GTT access</h3><p>Credentials are stored server-side; mapping and scheduled ingestion remain disabled until configured.</p><button type="button" id="gtt-connect-api">Configure connector</button></article>
-              <article><span>PUBLICATION GUARDRAIL</span><h3>No silent publication</h3><p>Profiling does not imply approval. Source, batch and data quality remain visible throughout the workflow.</p></article>
-            </div>
-            <div id="gtt-upload-catalog" class="gtt-catalog"></div>
-          </section>
-          <section data-gtt-panel="admin" hidden>
-            <header class="gtt-section-heading"><div><span>SOURCES &amp; ADMIN</span><h2>Connector, quality and lineage status</h2><p>This view reports implemented controls only; enterprise identity and role provisioning are not simulated.</p></div></header>
-            <div id="gtt-admin-grid" class="gtt-admin-grid"></div>
-          </section>
-        </main>
-      </section>
-      <section id="datahub-surface" class="datahub-surface" hidden>
-        <header class="datahub-header">
-          <div><span>HRP DATA ORCHESTRATION</span><h1>Market data hub</h1><p>Source-aware ingestion, comparison and reviewed join proposals.</p></div>
-          <div class="datahub-master-state"><span>MASTER STORE</span><strong id="datahub-master-file">provider_master.sqlite3</strong><small>Files, rows, lineage and approvals</small></div>
-        </header>
-        <div class="datahub-kpis">
-          <article><span>Datasets</span><strong id="datahub-kpi-datasets">0</strong><small>Across all providers</small></article>
-          <article><span>Normalized rows</span><strong id="datahub-kpi-rows">0</strong><small>Available for preview</small></article>
-          <article><span>Updates due</span><strong id="datahub-kpi-overdue">0</strong><small>Freshness reminder</small></article>
-          <article><span>Approved join proposals</span><strong id="datahub-kpi-relations">0</strong><small>Reviewed plans; not executed joins</small></article>
-        </div>
-        <div id="datahub-provider-grid" class="datahub-provider-grid" aria-label="Data providers"></div>
-        <nav class="datahub-nav" aria-label="Data hub tools">
-          <button type="button" class="active" data-datahub-tab="catalog">Dataset catalog</button>
-          <button type="button" data-datahub-tab="relationships">Compare &amp; relate</button>
-          <button type="button" data-datahub-tab="visualize">Visualize &amp; export</button>
-        </nav>
-        <div class="datahub-workbench">
-          <section data-datahub-panel="catalog">
-            <header><div><span>LINEAGE CATALOG</span><h2>Master datasets</h2></div><label>Filter source<select id="datahub-provider-filter"><option value="">All providers</option><option value="hrp_app">HRP app data</option><option value="gtt">GTT</option><option value="kpler">Kpler</option><option value="oceanbolt">Oceanbolt</option><option value="axs_marine">AXS Marine</option><option value="custom">Custom data</option></select></label></header>
-            <div id="datahub-catalog" class="datahub-catalog"></div>
-          </section>
-          <section data-datahub-panel="relationships" hidden>
-            <header><div><span>GOVERNED ORCHESTRATION</span><h2>Compare sources and propose joins</h2></div><small>Approval records a plan; it does not execute a join.</small></header>
-            <div class="datahub-relation-layout">
-              <div>
-                <label for="datahub-relationship-datasets">Datasets to compare</label>
-                <select id="datahub-relationship-datasets" multiple size="7"></select>
-                <label for="datahub-relationship-question">Research objective</label>
-                <textarea id="datahub-relationship-question" rows="4" placeholder="Example: Relate China coal imports by origin and port with coal-fired generation and industrial use."></textarea>
-                <div class="datahub-actions"><button type="button" id="datahub-compare">Compare sources</button><button type="button" id="datahub-propose">Propose relationship</button></div>
-              </div>
-              <div id="datahub-relationship-result" class="datahub-relationship-result"><div class="datahub-empty"><strong>Select two or more datasets</strong><span>The app will compare coverage, freshness, schema and candidate join keys.</span></div></div>
-            </div>
-          </section>
-          <section data-datahub-panel="visualize" hidden>
-            <header><div><span>ANALYTICAL PREVIEW</span><h2>Visualize a dataset</h2></div><small>Clean, source-aware cards built from normalized master-store rows.</small></header>
-            <div class="datahub-viz-card-grid">
-              <article class="datahub-viz-control-card">
-                <header><span>BUILD VISUAL</span><h3>Chart controls</h3><p>Select one dataset and the fields you want to compare.</p></header>
-                <div class="datahub-viz-toolbar">
-                  <label>Dataset<select id="datahub-viz-dataset"><option value="">Choose dataset</option></select></label>
-                  <div class="datahub-viz-field-row">
-                    <label>Chart<select id="datahub-viz-type"><option value="line">Line</option><option value="bar">Bars</option><option value="area">Area</option><option value="scatter">Scatter</option><option value="step">Step line</option><option value="lollipop">Lollipop</option><option value="dot">Dot plot</option><option value="histogram">Histogram</option><option value="pie">Pie</option><option value="heatmap">Heatmap</option><option value="table">Table</option></select></label>
-                    <label>X axis<select id="datahub-viz-x"><option value="">Select field</option></select></label>
-                    <label>Y axis<select id="datahub-viz-y"><option value="">Select field</option></select></label>
-                  </div>
-                  <button type="button" id="datahub-render-chart">Update visual</button>
-                </div>
-              </article>
-              <article class="datahub-viz-summary-card">
-                <header><span>DATASET SNAPSHOT</span><h3>At a glance</h3><p id="datahub-viz-source">Choose a dataset to see its coverage and quality.</p></header>
-                <div class="datahub-viz-metrics">
-                  <div><span>Rows</span><strong id="datahub-viz-rows">—</strong><small>Normalized records</small></div>
-                  <div><span>Fields</span><strong id="datahub-viz-fields">—</strong><small>Available columns</small></div>
-                  <div><span>Coverage</span><strong id="datahub-viz-period">—</strong><small>Observed period</small></div>
-                  <div><span>Quality</span><strong id="datahub-viz-quality">—</strong><small>Profile status</small></div>
-                </div>
-                <div id="datahub-downloads" class="datahub-downloads"></div>
-              </article>
-              <article class="datahub-chart-card">
-                <header><div><span id="datahub-chart-kicker">SELECT A DATASET</span><h3 id="datahub-chart-title">Chart preview</h3><p id="datahub-chart-subtitle">Choose compatible fields to create a visual.</p></div></header>
-                <div id="datahub-chart" class="datahub-chart"></div>
-              </article>
-              <details class="datahub-preview-card">
-                <summary><span><b>DATA ROWS</b><strong>Preview normalized records</strong></span><small>Open table</small></summary>
-                <div id="datahub-preview-table" class="datahub-preview-table"></div>
-              </details>
-            </div>
-          </section>
-        </div>
-        <input id="datahub-file-input" type="file" accept=".xlsx,.xls,.csv,.json,.pdf" hidden />
-        <dialog id="datahub-upload-dialog" class="datahub-dialog">
-          <form method="dialog">
-            <button class="datahub-dialog-close" value="cancel" aria-label="Close">&times;</button>
-            <span>ADD TO MASTER STORE</span><h2 id="datahub-upload-title">Upload dataset</h2>
-            <input id="datahub-upload-provider" type="hidden" />
-            <label>Dataset name<input id="datahub-upload-name" required placeholder="e.g. China coal imports monthly" /></label>
-            <label>Expected update frequency<select id="datahub-upload-frequency"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly" selected>Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Yearly</option><option value="ad_hoc">Ad hoc</option></select></label>
-            <label>File<div id="datahub-selected-file" class="datahub-selected-file">No file selected</div></label>
-            <button type="button" id="datahub-choose-file">Choose Excel, CSV, JSON or PDF</button>
-            <button type="button" class="primary" id="datahub-submit-upload">Upload and profile</button>
-            <p id="datahub-upload-message">The file will be profiled for dates, measures, missingness and duplicates.</p>
-          </form>
-        </dialog>
-        <dialog id="datahub-api-dialog" class="datahub-dialog">
-          <form method="dialog">
-            <button class="datahub-dialog-close" value="cancel" aria-label="Close">&times;</button>
-            <span>SECURE CONNECTION</span><h2 id="datahub-api-title">Connect provider API</h2>
-            <input id="datahub-api-provider" type="hidden" />
-            <label>Connection name<input id="datahub-api-label" value="Default connection" /></label>
-            <label>API endpoint (optional)<input id="datahub-api-endpoint" type="url" placeholder="https://api.provider.com/v1" /></label>
-            <label>API key<input id="datahub-api-key" type="password" autocomplete="new-password" placeholder="Paste API key" /></label>
-            <button type="button" class="primary" id="datahub-submit-api">Save connection</button>
-            <p id="datahub-api-message">Credentials are held only by the running server. Saving them does not start ingestion; a provider-specific connector must still be configured.</p>
-          </form>
-        </dialog>
-      </section>
       <div class="map-topbar">
         <div class="map-status"><span></span><strong id="map-status">Loading ports…</strong></div>
         <div class="map-tools" aria-label="Map display controls">
@@ -1059,8 +876,18 @@
     </main>
   </div>
 
+  <dialog id="access-panel" aria-labelledby="access-title">
+    <header><h2 id="access-title">Approved-user access</h2><button id="access-close" type="button">Close</button></header>
+    <p>Approve a specific Microsoft identity after confirming it with the person. An email label alone does not grant access.</p>
+    <form id="access-invite"><label>Email address <input id="access-email" type="email" required maxlength="254" /></label><button>Add approved email</button></form>
+    <p id="access-message" role="status"></p><div id="access-content"></div>
+  </dialog>
+  <script src="/static/auth/access-v2.js?v=20261001-hrp-sso"></script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/static/js/broker-tools.js?v=20260915-tabs-bmkg-1"></script>
-  <script src="/static/js/app.js?v=20260915-tabs-bmkg-1"></script>
+  <script src="/static/js/port-outlook.js?v=20260928-outlook"></script>
+  <script src="/static/js/app.js?v=20260928-ais-search"></script>
+  <script src="/static/js/intelligence-desk.js?v=20260928-intelligence"></script>
+  <script src="/static/js/voyage-activity.js?v=20260928-ais-map"></script>
 </body>
 </html>

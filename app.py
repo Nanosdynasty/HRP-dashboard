@@ -1,6 +1,6 @@
 """Global Energy Transition Dashboard"""
 from __future__ import annotations
-import os, json, io, csv, uuid, asyncio, logging, math, re, zipfile, sqlite3, time, hmac
+import os, json, io, csv, uuid, asyncio, logging, math, re, zipfile, sqlite3, time, hmac, subprocess, sys
 from collections import defaultdict, deque
 from functools import lru_cache
 from pathlib import Path
@@ -20,6 +20,9 @@ from maritime_extras import (
     fetch_weather, fetch_bunker_prices, estimate_fuel_cost,
 )
 from port_catalog import PortCatalog
+from ais_search import init_metadata as init_ais_search_metadata, retain_metadata as retain_ais_metadata, search_observed
+from access_control import AccessControl, AccessMiddleware, AuthConfig
+from berth_details import berth_detail_for_port
 from imd_coastal_weather import ImdCoastalWeatherManager, expand_imd_records
 from bmkg_marine_weather import BmkgMarineWeatherManager
 from sea_marine_weather import SeaMarineWeatherManager
@@ -29,7 +32,10 @@ from coastal_weather_schema import (
     COASTAL_WEATHER_SOURCE_CATALOG,
     normalize_coastal_weather_rows,
 )
-from port_disruptions import port_disruption_payload
+from port_disruptions import port_disruption_payload, configure_notice_manager
+from authority_notices import AuthorityNoticeManager
+from port_disruption_outlook import OutlookEngine, filter_outlook, outlook_csv
+from starlette.responses import Response
 from river_levels import RiverLevelManager, SOURCE_CATALOG, export_rows_csv, export_river_levels_xlsx
 from data_hub import create_data_hub_router
 from news_intelligence import NewsIntelligenceManager
@@ -207,6 +213,7 @@ def _init_ais_trail_db() -> None:
         latest_count = db.execute(
             "SELECT COUNT(*) FROM ais_latest_positions"
         ).fetchone()[0]
+        init_ais_search_metadata(db)
         if not latest_count:
             db.execute(
                 """
@@ -444,6 +451,55 @@ def _aggregate_dashboard(frame: pd.DataFrame, frequency: str, flow_columns: List
     return result.groupby("period", as_index=False)[available].sum(min_count=1)
 
 
+def _latest_npp_stock_snapshot() -> Dict[str, Any]:
+    """Read the last validated NPP stock-cover snapshot without forcing a network call."""
+    try:
+        if not NPP_CACHE_PATH.exists():
+            raise FileNotFoundError
+        payload = json.loads(NPP_CACHE_PATH.read_text(encoding="utf-8"))
+        stock = payload.get("coal_stock_availability") or {}
+        rows = []
+        for row in stock.get("rows") or []:
+            item = dict(row)
+            item["period"] = stock.get("date")
+            item["status"] = "stale" if payload.get("stale") else "official reported"
+            rows.append(item)
+        return {
+            "date": stock.get("date"),
+            "rows": rows,
+            "status": "stale" if payload.get("stale") else "official reported",
+            "source_url": (payload.get("source") or {}).get("dashboard_url", NPP_ALL_INDIA_URL),
+            "retrieved_at": payload.get("fetched_at"),
+            "limitation": "NPP publishes the latest station distribution; historical rows are shown only when dated releases are available.",
+        }
+    except (OSError, json.JSONDecodeError, TypeError):
+        return {
+            "date": None, "rows": [], "status": "unavailable",
+            "source_url": NPP_ALL_INDIA_URL, "retrieved_at": None,
+            "limitation": "No validated NPP station stock-cover snapshot is available.",
+        }
+
+
+def _series_trend(frame: pd.DataFrame, key: str, unit: str = "") -> Dict[str, Any]:
+    if key not in frame or "period" not in frame:
+        values = pd.DataFrame()
+    else:
+        values = frame[["period", key] + (["status"] if "status" in frame else [])].dropna(subset=[key])
+    if values.empty:
+        return {"metric": key, "unit": unit, "latest": None, "period": None, "status": "unavailable"}
+    values = values.sort_values("period")
+    latest = values.iloc[-1]
+    result = {"metric": key, "unit": unit, "latest": float(latest[key]), "period": str(latest["period"]), "status": str(latest.get("status") or "official")}
+    if len(values) > 1 and float(values.iloc[-2][key]) != 0:
+        result["prior_period_change_pct"] = (float(latest[key]) / float(values.iloc[-2][key]) - 1) * 100
+        result["prior_period"] = str(values.iloc[-2]["period"])
+    if len(values) > 12 and float(values.iloc[-13][key]) != 0:
+        result["year_on_year_change_pct"] = (float(latest[key]) / float(values.iloc[-13][key]) - 1) * 100
+        result["year_on_year_period"] = str(values.iloc[-13]["period"])
+    result["comparison_basis"] = "same official series; missing periods are retained"
+    return result
+
+
 def _coal_dashboard_payload(
     tab: str, start: str, end: str, frequency: str,
     focus: str = "all", comparison: str = "previous_period",
@@ -454,8 +510,9 @@ def _coal_dashboard_payload(
         raise HTTPException(400, "Frequency must be monthly, quarterly or financial_year")
     if comparison not in {"none", "previous_period", "previous_year"}:
         raise HTTPException(400, "Unknown comparison mode")
-    if not re.fullmatch(r"\d{4}-\d{2}", start) or not re.fullmatch(r"\d{4}-\d{2}", end) or start > end:
-        raise HTTPException(400, "Use a valid From/To month range")
+    period_pattern = r"\d{4}-\d{2}" if frequency != "financial_year" else r"\d{4}-\d{2}|\d{4}-\d{2}"
+    if not re.fullmatch(period_pattern, start) or not re.fullmatch(period_pattern, end) or start > end:
+        raise HTTPException(400, "Use a valid From/To reporting range")
 
     coal_all = _canonical_frame("coal_monthly_official.csv")
     power_all = _canonical_frame("india_power_generation_monthly.csv")
@@ -465,6 +522,7 @@ def _coal_dashboard_payload(
         mix_all = _canonical_frame("india_power_mix_june.csv")
     imports_all = _canonical_frame("coal_imports_monthly.csv")
     annual_all = _canonical_frame("coal_india_annual.csv")
+    station_stock = _latest_npp_stock_snapshot()
     quality = _dashboard_quality()
     sources = {
         "coal": {"title": "Ministry of Coal — Monthly Statistics at a Glance", "url": "https://coal.gov.in/public-information/monthly-statistics-at-glance"},
@@ -536,6 +594,9 @@ def _coal_dashboard_payload(
                     {"key": "solar_generation_gwh", "label": "Solar", "color": "#e4a72e"},
                     {"key": "other_renewables_total_gwh", "label": "Other renewables", "color": "#54a66f"},
                 ]},
+                {"id": "overview-station-stock", "title": "Latest station stock-cover distribution", "subtitle": "NPP-reported station counts by cover band; this is separate from pit-head tonnes", "x_label": "Stock-cover band", "y_label": "Stations", "type": "column", "rows": station_stock["rows"], "series": [
+                    {"key": "station_count", "label": "Stations", "color": "#2f8f56"},
+                ]},
             ]
         latest = frame.dropna(subset=["production_mt"]).iloc[-1].to_dict() if not frame.dropna(subset=["production_mt"]).empty else {}
         latest_dispatch = frame.dropna(subset=["dispatch_mt"]).iloc[-1].to_dict() if "dispatch_mt" in frame and not frame.dropna(subset=["dispatch_mt"]).empty else {}
@@ -548,6 +609,12 @@ def _coal_dashboard_payload(
         if tab == "overview" and not mix_frame.empty:
             power_latest = mix_frame.dropna(subset=["coal_share_pct"]).iloc[-1]
             kpis[2] = {"label": "Coal share of all generation", "value": power_latest["coal_share_pct"], "unit": "%", "detail": f"Coal ÷ all-source total · {power_latest['period']}"}
+            kpis.extend([
+                {"label": "Coal-fired generation", "value": power_latest.get("coal_generation_gwh"), "unit": "GWh", "detail": power_latest.get("period", "—")},
+                {"label": "Latest coal imports", "value": imports_all.dropna(subset=["total_coal_mt"]).iloc[-1]["total_coal_mt"] if "total_coal_mt" in imports_all and not imports_all.dropna(subset=["total_coal_mt"]).empty else None, "unit": "MT", "detail": f"Latest monthly customs total · {imports_all.period.max()}"},
+                {"label": "Pit-head closing stock", "value": annual_all.dropna(subset=["closing_stock_mt"]).iloc[-1]["closing_stock_mt"] if "closing_stock_mt" in annual_all and not annual_all.dropna(subset=["closing_stock_mt"]).empty else None, "unit": "MT", "detail": "Latest annual reported inventory"},
+                {"label": "Station stock cover", "value": sum(float(row.get("station_count") or 0) for row in station_stock["rows"]), "unit": "stations", "detail": f"NPP observation {station_stock.get('date') or 'unavailable'}"},
+            ])
         tab_sources = [sources["coal"], sources["power"], sources["renewable"]] if tab == "overview" else [sources["coal"]]
         availability = {"start": str(coal_all.period.min()), "end": str(coal_all.period.max()), "grain": "monthly", "status": "provisional"}
     elif tab == "power":
@@ -665,6 +732,9 @@ def _coal_dashboard_payload(
                 {"key": "production_mt", "label": "Production", "color": "#003671"},
                 {"key": "offtake_mt", "label": "Off-take", "color": "#2e6d92"},
             ]},
+            {"id": "station-stock-cover", "title": "Station stock-cover bands", "subtitle": "Latest NPP observation; counts are not pit-head tonnes", "x_label": "Stock-cover band", "y_label": "Stations", "type": "column", "rows": station_stock["rows"], "series": [
+                {"key": "station_count", "label": "Stations", "color": "#2f8f56"},
+            ]},
         ]
         latest = frame.iloc[-1].to_dict() if not frame.empty else {}
         latest_stock_frame = frame.dropna(subset=["closing_stock_mt"]) if "closing_stock_mt" in frame else pd.DataFrame()
@@ -673,7 +743,7 @@ def _coal_dashboard_payload(
             {"label": "Pit-head closing stock", "value": latest_stock.get("closing_stock_mt"), "unit": "MT", "detail": latest_stock.get("period", "—")},
             {"label": "Annual off-take", "value": latest.get("offtake_mt"), "unit": "MT", "detail": latest.get("period", "—")},
             {"label": "Annual production", "value": latest.get("production_mt"), "unit": "MT", "detail": latest.get("period", "—")},
-            {"label": "Stock-cover days", "value": None, "display": "Not substituted", "unit": "", "detail": "Requires plant inventory and burn rate"},
+            {"label": "Station stock cover", "value": sum(float(row.get("station_count") or 0) for row in station_stock["rows"]) if station_stock["rows"] else None, "display": None if station_stock["rows"] else "Unavailable", "unit": "stations", "detail": f"NPP observation {station_stock.get('date') or 'unavailable'}"},
         ]
         tab_sources = [sources["directory"]]
         availability = {"start": str(frame.period.min()), "end": str(frame.period.max()), "grain": "financial year", "status": "final"}
@@ -722,12 +792,31 @@ def _coal_dashboard_payload(
         if len(selected_columns) > 1:
             frame = frame[selected_columns]
 
+    coverage_by_dataset = {
+        "production": {"start": str(coal_all.period.min()), "end": str(coal_all.period.max()), "latest_observation": str(coal_all.period.max()), "status": "provisional", "limitation": "Monthly Ministry bulletin series."},
+        "imports": {"start": str(imports_all.period.min()), "end": str(imports_all.period.max()), "latest_observation": str(imports_all.period.max()), "status": "provisional", "limitation": "Latest validated monthly customs total."},
+        "use": {"start": str(power_all.period.min()), "end": str(power_all.period.max()), "latest_observation": str(power_all.period.max()), "status": "official reported", "limitation": "Coal generation and dispatch measure different parts of use."},
+        "pit_head_stocks": {"start": str(annual_all.period.min()), "end": str(annual_all.period.max()), "latest_observation": str(annual_all.dropna(subset=['closing_stock_mt']).period.max()) if 'closing_stock_mt' in annual_all and not annual_all.dropna(subset=['closing_stock_mt']).empty else None, "status": "final", "limitation": "Annual producer inventory; FY2025-26 is not yet reported."},
+        "station_stocks": {"start": station_stock.get("date"), "end": station_stock.get("date"), "latest_observation": station_stock.get("date"), "status": station_stock.get("status"), "limitation": station_stock.get("limitation")},
+    }
+    provenance = {
+        "production_mt": {**sources["coal"], "retrieved_at": quality.get("generated_at")},
+        "dispatch_mt": {**sources["coal"], "retrieved_at": quality.get("generated_at")},
+        "coal_generation_gwh": {**sources["power"], "retrieved_at": quality.get("generated_at")},
+        "imports": {**sources["imports_latest"], "retrieved_at": quality.get("generated_at")},
+        "pit_head_closing_stock_mt": {**sources["directory"], "retrieved_at": quality.get("generated_at")},
+        "station_stock_cover": {"title": "National Power Portal — Coal stock availability", "url": station_stock.get("source_url"), "retrieved_at": station_stock.get("retrieved_at"), "status": station_stock.get("status")},
+    }
+    trend_source = frame if tab != "trade" else _aggregate_dashboard(_filter_months(imports_all, start, end), frequency, ["coking_coal_mt", "non_coking_coal_mt", "total_coal_mt"])
+    trend_summary = [_series_trend(trend_source, key, "MT") for key in ("production_mt", "dispatch_mt", "total_coal_mt") if key in trend_source]
     return {
         "tab": tab, "frequency": frequency, "filters": {"from": start, "to": end},
         "focus": focus, "comparison": comparison,
         "focus_options": [{"id": item[0], "label": item[1]} for item in focus_options[tab]],
         "available_range": availability, "kpis": kpis, "charts": charts,
         "columns": list(frame.columns), "rows": _json_records(frame), "sources": tab_sources,
+        "coverage_by_dataset": coverage_by_dataset, "latest": {"station_stock_cover": station_stock, "pit_head_closing_stock_mt": (coverage_by_dataset["pit_head_stocks"].get("latest_observation"))},
+        "trend_summary": trend_summary, "provenance": provenance,
         "quality": {"generated_at": quality.get("generated_at"), "missing_values_retained": True,
                     "note": "Official values only. Missing observations remain blank and are excluded from calculations."},
     }
@@ -1726,11 +1815,14 @@ app.add_middleware(
 )
 
 ADMIN_API_TOKEN = os.getenv("APP_ADMIN_TOKEN", "").strip()
+access_control = AccessControl(AuthConfig.from_env(UPLOAD_DIR), UPLOAD_DIR / "_access" / "access.sqlite3")
+app.include_router(access_control.router())
 REQUIRE_ADMIN_TOKEN = bool(os.getenv("RENDER")) or os.getenv(
     "APP_ENV", "development"
 ).strip().lower() == "production"
 _rate_windows: Dict[str, deque] = defaultdict(deque)
 _MUTATING_ADMIN_PREFIXES = (
+    "/api/port-activity/upload",
     "/api/data-hub/upload",
     "/api/data-hub/api-connections",
     "/api/data-hub/relationships/",
@@ -1740,6 +1832,7 @@ _MUTATING_ADMIN_PREFIXES = (
     "/api/major-port-weather/refresh",
     "/api/weather/cyclones/refresh",
     "/api/river-levels/refresh",
+    "/api/coal/refresh",
 )
 
 
@@ -1762,12 +1855,13 @@ async def security_and_rate_limit(request: Request, call_next):
                 headers={"Retry-After": "60"},
             )
         window.append(now)
-        if REQUIRE_ADMIN_TOKEN and not ADMIN_API_TOKEN and path.startswith(_MUTATING_ADMIN_PREFIXES):
+        session_admin = request.scope.get("auth_user", {}).get("role") == "admin" or request.scope.get("section_edit_authorized", False)
+        if not access_control.config.enabled and REQUIRE_ADMIN_TOKEN and not ADMIN_API_TOKEN and path.startswith(_MUTATING_ADMIN_PREFIXES):
             return JSONResponse(
                 {"detail": "Administrator operations are disabled until APP_ADMIN_TOKEN is configured."},
                 status_code=503,
             )
-        if ADMIN_API_TOKEN and path.startswith(_MUTATING_ADMIN_PREFIXES):
+        if not session_admin and ADMIN_API_TOKEN and path.startswith(_MUTATING_ADMIN_PREFIXES):
             supplied = request.headers.get("X-Admin-Token", "")
             if not hmac.compare_digest(supplied, ADMIN_API_TOKEN):
                 return JSONResponse(
@@ -1794,6 +1888,7 @@ async def security_and_rate_limit(request: Request, call_next):
         )
     return response
 
+app.add_middleware(AccessMiddleware, access=access_control)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 @app.get("/")
@@ -2686,11 +2781,14 @@ def _route_reference_ports(
     return sorted(selected, key=lambda item: item["progress_pct"])
 
 @app.get("/api/trackers")
-async def list_trackers():
+async def list_trackers(request: Request):
     summaries_path = _summary_path()
     summaries = json.loads(summaries_path.read_text()) if summaries_path.exists() else {}
     result = []
     for key, meta in TRACKERS.items():
+        from section_permissions import can, TRACKER_SECTIONS
+        if access_control.config.enabled and not can(request.scope.get("auth_user", {}), TRACKER_SECTIONS.get(key)):
+            continue
         s = summaries.get(key, {})
         result.append({
             "id": key, "label": meta["label"], "icon": meta["icon"],
@@ -2700,9 +2798,21 @@ async def list_trackers():
             "countries": s.get("countries", 0),
             "status_counts": s.get("status_counts", {}),
         })
-    for uname in user_datasets:
+    for uname in ([] if access_control.config.enabled else user_datasets):
         result.append({"id": f"user_{uname}", "label": f"📤 {uname}", "icon": "📁", "rows": 0, "is_user": True})
     return result
+
+
+@app.get("/api/selectors/ports")
+async def shared_port_selectors(request: Request):
+    """Minimal stable identifiers for authorized routing, weather and AIS selectors."""
+    from section_permissions import can
+    user = request.scope.get("auth_user", {})
+    if access_control.config.enabled and not any(can(user, section) for section in (
+            "voyage_analysis", "voyage_distance", "port_activity", "live_ais", "weather", "ports")):
+        raise HTTPException(403, "No permitted section uses port selectors.")
+    return [{key: row.get(key) for key in ("id", "name", "country", "lat", "lon")}
+            for row in ports.by_id.values()]
 
 
 @app.get("/api/layer-facets")
@@ -3141,7 +3251,24 @@ async def port_detail(port_id: str):
     port = ports.by_id.get(port_id)
     if not port:
         raise HTTPException(404, "Unknown port")
-    return port
+    return {**port, "berth_detail": berth_detail_for_port(port)}
+
+
+def _run_coal_refresh() -> Dict[str, Any]:
+    """Run the validated official refresh script and return a compact result."""
+    script = BASE_DIR / "scripts" / "refresh_coal_workspace_latest.py"
+    if not script.exists():
+        return {"ok": False, "error": "Coal refresh script is unavailable."}
+    completed = subprocess.run([sys.executable, str(script)], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=180)
+    return {"ok": completed.returncode == 0, "updated_datasets": ["coal imports", "annual coal snapshot"] if completed.returncode == 0 else [], "output": (completed.stdout or completed.stderr)[-4000:]}
+
+
+@app.post("/api/coal/refresh")
+async def coal_refresh():
+    result = await asyncio.to_thread(_run_coal_refresh)
+    if not result.get("ok"):
+        raise HTTPException(502, detail={"message": "Official refresh failed; last validated snapshot retained.", **result})
+    return {**result, "latest": _dashboard_quality(), "stale_datasets": []}
 
 
 @app.get("/api/coal/summary")
@@ -3384,7 +3511,8 @@ def coal_dashboard_periods():
     for filename in ("coal_monthly_official.csv", "india_power_generation_monthly.csv", "india_power_mix_monthly.csv", "coal_imports_monthly.csv"):
         frame = _canonical_frame(filename)
         periods.update(p for p in frame["period"].astype(str) if re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2])", p))
-    return {"periods": sorted(periods)}
+    annual = _canonical_frame("coal_india_annual.csv")["period"].astype(str).tolist()
+    return {"periods": sorted(periods), "annual_periods": annual, "annual_coverage": {"start": min(annual) if annual else None, "end": max(annual) if annual else None}}
 
 
 @app.get("/api/coal/dashboard")
@@ -3671,6 +3799,13 @@ async def export_coal_data(
         },
     )
 
+from voyage_analysis import create_voyage_router
+from port_activity import ActivityStore, create_activity_router
+activity_store = ActivityStore(UPLOAD_DIR / '_port_activity' / 'activity.sqlite3')
+app.include_router(create_voyage_router(ports, _compute_route, _port_approach, BASE_DIR,
+    preferred_route=lambda a,b,avoid: _compute_curated_corridor(a.get('port_id'),b.get('port_id'),12,avoid)))
+app.include_router(create_activity_router(activity_store, AIS_TRAIL_DB_PATH, BASE_DIR))
+
 @app.get("/api/zones")
 async def get_zones():
     payload = load_zones()
@@ -3826,6 +3961,8 @@ async def sea_route(req: RouteRequest):
             warnings.append("JWC listed-area exposure is advisory; review the latest circular before sailing.")
         if zone_summary.get("eca_zones"):
             warnings.append("Route intersects an IMO ECA; verify MARPOL fuel and reporting requirements.")
+        if zone_summary.get("eca_boundary_status") != "verified":
+            warnings.append("ECA highlighting is incomplete where verified water-only boundary geometry is unavailable.")
         routing_knowledge = _routing_knowledge_base()
         result = {
             **primary,
@@ -3856,6 +3993,7 @@ async def sea_route(req: RouteRequest):
                 limit=5,
             ),
             "zones": zone_summary,
+            "eca_segments": zone_summary.get("eca_segments", []),
             "risk_avoidance": {
                 "piracy": False,
                 "jwc": False,
@@ -3944,6 +4082,7 @@ def _store_ais_observations(vessels: List[dict]) -> None:
     if not rows:
         return
     with sqlite3.connect(AIS_TRAIL_DB_PATH) as db:
+        retain_ais_metadata(db, vessels)
         for row in rows:
             previous = db.execute(
                 """
@@ -4444,6 +4583,85 @@ bmkg_marine_weather_manager = BmkgMarineWeatherManager(
 )
 sea_marine_weather_manager = SeaMarineWeatherManager(SEA_MARINE_CACHE_PATH)
 major_port_weather_manager = MajorPortWeatherManager(MAJOR_PORT_WEATHER_CACHE_PATH)
+authority_notice_manager = AuthorityNoticeManager(UPLOAD_DIR / "_authority_notices" / "latest.json")
+configure_notice_manager(authority_notice_manager)
+outlook_engine = OutlookEngine(ports.ports, json.loads((DATA_DIR / "port_operating_rules.json").read_text(encoding="utf-8"))["rules"])
+_outlook_cache = {}
+_outlook_lock = asyncio.Lock()
+
+
+@app.on_event("startup")
+async def start_authority_notice_collection():
+    authority_notice_manager.start()
+
+
+@app.on_event("shutdown")
+async def stop_authority_notice_collection():
+    await authority_notice_manager.stop()
+
+
+async def _port_outlook_snapshot():
+    global _outlook_cache
+    managers = [imd_coastal_weather_manager, bmkg_marine_weather_manager, sea_marine_weather_manager, major_port_weather_manager]
+    signature = (int(time.time() // 60), *(id(m.payload) for m in managers), id(authority_notice_manager.payload))
+    async with _outlook_lock:
+        if _outlook_cache.get("signature") != signature:
+            records, errors = [], {}
+            for manager in managers:
+                payload = manager.payload or {}
+                rows = payload.get("rows", [])
+                if manager is imd_coastal_weather_manager:
+                    rows = expand_imd_records(rows)
+                for row in rows:
+                    records.append({**row, "fetched_at": row.get("fetched_at") or payload.get("fetched_at")})
+                    if manager.last_error:
+                        errors[row.get("provider_code") or type(manager).__name__] = manager.last_error
+                statuses = payload.get("source_status") or {}
+                status_items = statuses.items() if isinstance(statuses, dict) else ((s.get("provider_code") or s.get("source_id") or s.get("country") or "weather", s) for s in statuses if isinstance(s, dict))
+                for source_id, status in status_items:
+                    if isinstance(status, dict) and status.get("error"):
+                        errors[source_id] = status["error"]
+                for warning in payload.get("parse_warnings") or []:
+                    if isinstance(warning, str):
+                        errors[type(manager).__name__] = str(warning)[:400]
+            notices = await port_disruption_payload()
+            result = await asyncio.to_thread(outlook_engine.build, records, notices.get("all_notices", []), errors=errors, sources=notices["sources"])
+            result["notice_source_status"] = notices.get("source_status", {})
+            result["snapshot_id"] = str(uuid.uuid4())
+            previous = _outlook_cache.get("payload")
+            _outlook_cache = {"signature": signature, "payload": result, "previous": previous}
+        return _outlook_cache["payload"]
+
+
+@app.get("/api/port-disruption-outlook")
+async def port_disruption_outlook(port: str = "", country: str = "", commodity: str = "", operation: str = "", assessment: str = "", forecast_window: str = Query("", pattern="^(|0-24|24-72)$"), sort: str = "assessment", direction: str = Query("asc", pattern="^(asc|desc)$"), historical: bool = False, limit: int = Query(0, ge=0, le=500), offset: int = Query(0, ge=0)):
+    payload = filter_outlook(await _port_outlook_snapshot(), port=port, country=country, commodity=commodity, operation=operation, assessment=assessment, forecast_window=forecast_window, sort=sort, direction=direction)
+    if not historical:
+        payload = {**payload, "historical_forecasts": [], "historical_forecast_count": len(payload["historical_forecasts"])}
+    elif port:
+        payload = {**payload, "historical_forecasts": [r for r in payload["historical_forecasts"] if r["port_id"] == port or port.casefold() in r["port_name"].casefold()]}
+    if limit:
+        ranks = {name: i for i, name in enumerate(("Confirmed restriction", "Published limit exceeded", "Weather watch", "Not assessed", "No trigger identified"))}
+        markers = {}
+        marker_fields = ("row_id", "port_id", "port_name", "country", "latitude", "longitude", "scope_name", "operation", "forecast_window", "assessment")
+        for row in payload["rows"]:
+            pid = row["port_id"]
+            if pid not in markers or ranks[row["assessment"]] < ranks[markers[pid]["assessment"]]:
+                markers[pid] = {field: row[field] for field in marker_fields}
+        payload = {**payload, "rows": payload["rows"][offset:offset + limit], "map_markers": list(markers.values()), "offset": offset, "limit": limit}
+    return payload
+
+
+@app.get("/api/port-disruption-outlook/export.csv")
+async def export_port_disruption_outlook(port: str = "", country: str = "", commodity: str = "", operation: str = "", assessment: str = "", forecast_window: str = Query("", pattern="^(|0-24|24-72)$"), sort: str = "assessment", direction: str = Query("asc", pattern="^(asc|desc)$"), snapshot_id: str = ""):
+    payload = await _port_outlook_snapshot()
+    if snapshot_id and snapshot_id != payload["snapshot_id"]:
+        previous = _outlook_cache.get("previous")
+        if not previous or previous["snapshot_id"] != snapshot_id:
+            raise HTTPException(409, "Displayed snapshot expired. Refresh the outlook before exporting.")
+        payload = previous
+    filtered = filter_outlook(payload, port=port, country=country, commodity=commodity, operation=operation, assessment=assessment, forecast_window=forecast_window, sort=sort, direction=direction)
+    return Response(outlook_csv(filtered), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": 'attachment; filename="port-disruption-outlook.csv"', "X-Outlook-Snapshot": payload["snapshot_id"]})
 global_cyclone_manager = GlobalCycloneManager(
     GLOBAL_CYCLONE_CACHE_PATH, ports.ports
 )
@@ -4503,7 +4721,7 @@ async def start_river_level_collection():
 @app.on_event("startup")
 async def start_news_intelligence_collection():
     """Warm the focused news cache only when a NewsData credential is configured."""
-    asyncio.create_task(news_intelligence_manager.refresh())
+    news_intelligence_manager.start()
 
 
 @app.on_event("startup")
@@ -5348,18 +5566,44 @@ async def river_level_sources():
 
 
 @app.get("/api/news")
-async def market_news(
-    topic: str = Query("all", pattern="^(all|chartering|dry_bulk|ports|cargo_trade|weather)$"),
-    q: str = Query("", max_length=100),
-):
-    """Return cached, English, commercially relevant dry-bulk articles.
-
-    The provider credential remains server-side; the browser receives only
-    source article metadata and never the provider request URL or API key.
-    """
-    if not news_intelligence_manager.payload or not news_intelligence_manager._is_fresh():
+async def market_news(article_ids: str = Query("", max_length=20000), topic: str = "all", commodity_group: str = "all", q: str = Query("", max_length=200), days: int = Query(7, ge=0, le=3650), page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=100), country: str = "", port: str = "", vessel: str = "", publisher: str = "", content_type: str = "", language: str = "", start: str = "", end: str = "", sort: str = Query("newest", pattern="^(newest|relevance|source|updated)$")):
+    if not news_intelligence_manager._is_fresh():
         await news_intelligence_manager.refresh()
-    return news_intelligence_manager.response(topic=topic, query=q.strip())
+    return news_intelligence_manager.response(article_ids=article_ids, topic=topic, commodity_group=commodity_group, query=q, days=days, page=page, page_size=page_size, country=country, port=port, vessel=vessel, publisher=publisher, content_type=content_type, language=language, start=start, end=end, sort=sort)
+
+
+@app.get("/api/news/export.csv")
+async def export_news(snapshot_id: str):
+    from intelligence_archive import export_csv
+    rows=news_intelligence_manager.archive.snapshot_rows(snapshot_id)
+    if rows is None: raise HTTPException(409, "Displayed snapshot has expired; reload the view before exporting")
+    return Response(content=export_csv(rows), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": "attachment; filename=intelligence.csv"})
+
+
+@app.get("/api/news/brief")
+async def news_brief(snapshot_id: str):
+    rows=news_intelligence_manager.archive.snapshot_rows(snapshot_id)
+    if rows is None: raise HTTPException(409, "Reload the view before creating a briefing")
+    return news_intelligence_manager.archive.brief(rows)
+
+
+@app.get("/api/news/articles/{article_id}")
+async def news_article(article_id: str):
+    row=news_intelligence_manager.archive.get(article_id)
+    if row is None: raise HTTPException(404, "Article is not in the archive")
+    row["related_coverage"]=[r for r in news_intelligence_manager.archive.all() if r["event_id"]==row["event_id"] and r["id"]!=article_id]
+    return row
+
+
+@app.post("/api/news/articles/{article_id}/document")
+async def review_news_document(article_id: str):
+    from official_intelligence_reports import document_evidence
+    row=news_intelligence_manager.archive.get(article_id)
+    if row is None: raise HTTPException(404, "Report is not in the archive")
+    try: reviewed=await document_evidence(row)
+    except Exception as exc: raise HTTPException(502, str(exc)) from exc
+    news_intelligence_manager.archive.ingest([reviewed])
+    return reviewed
 
 
 @app.post("/api/news/refresh")
@@ -5503,6 +5747,14 @@ async def ais_snapshot(req: AisSnapshotRequest):
     }
 
 
+@app.get('/api/ais/search')
+async def ais_vessel_search(q: str = Query(...,min_length=1,max_length=80)):
+    vessels=search_observed(AIS_TRAIL_DB_PATH,ais_live_manager.vessels,q)
+    return {'vessels':vessels,'query':q,'scope':'All retained observations and live cache; independent of map filters',
+            'sampled_at':datetime.now(timezone.utc).isoformat(),
+            'message': 'Matching observed positions; inspect observation timestamps.' if vessels else 'No matching position has been received or retained by this app. IMO/name lookup also needs vessel static data; this is not confirmation that the ship is absent or has AIS switched off.'}
+
+
 @app.get("/api/ais/trail/{mmsi}")
 async def ais_trail(
     mmsi: str,
@@ -5625,6 +5877,9 @@ async def chat(req: ChatRequest):
 
 @app.get("/api/health")
 async def health():
+    if access_control.config.enabled:
+        # Public liveness only: no catalog, credentials, storage paths or feed state.
+        return {"status": "ok"}
     return {
         "status": "ok",
         "trackers": list(TRACKERS.keys()),
@@ -5649,3 +5904,8 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+
+
+@app.on_event("shutdown")
+async def stop_news_collection():
+    await news_intelligence_manager.stop()

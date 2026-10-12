@@ -21,6 +21,8 @@ import httpx
 log = logging.getLogger("bmkg-marine-weather")
 
 BMKG_ROOT = "https://maritim.bmkg.go.id/"
+BMKG_API_BASE = f"{BMKG_ROOT}marine2026-data/"
+BMKG_API_DOCS = f"{BMKG_ROOT}apidoc"
 BMKG_PORT_LIST = f"{BMKG_ROOT}public_api/pelabuhan_list"
 BMKG_WATER_LIST = f"{BMKG_ROOT}public_api/perairan_list"
 BMKG_PORT_FILE = f"{BMKG_ROOT}public_api/pelabuhan/{{file_name}}"
@@ -29,7 +31,7 @@ BMKG_WATER_GEOMETRY = f"{BMKG_ROOT}public_api/static/wilayah_perairan.json"
 BMKG_PORT_SOURCE = f"{BMKG_ROOT}cuaca/pelabuhan"
 BMKG_WATER_SOURCE = f"{BMKG_ROOT}cuaca/perairan"
 REFRESH_SECONDS = 3 * 60 * 60
-FAILED_REFRESH_RETRY_SECONDS = 10 * 60
+FAILED_REFRESH_RETRY_SECONDS = 5 * 60
 SCHEMA_VERSION = 3
 
 DIRECTION_EN = {
@@ -239,6 +241,68 @@ def normalize_port(payload: Dict[str, Any], source_file: str) -> List[Dict[str, 
     return rows
 
 
+def modern_inventory(payload: dict, kind: str) -> List[dict]:
+    """Official province indexes; IDs are stable BMKG codes, not filenames."""
+    field = "ports" if kind == "port" else "areas"
+    items = [dict(item, province=group.get("province")) for group in payload.get("data", []) for item in group.get(field, []) if item.get("id")]
+    if not items:
+        raise ValueError(f"BMKG {field} index has no usable locations")
+    return list({str(item["id"]): item for item in items}.values())
+
+
+def normalize_modern(payload: dict, metadata: dict, kind: str, geometry: Optional[dict] = None) -> List[dict]:
+    """Normalize the documented 2026 hourly / three-hourly BMKG schema."""
+    code = str(metadata["id"])
+    if str(payload.get("code")) != code:
+        raise ValueError("BMKG forecast code does not match location index")
+    samples = [item for field, values in payload.items() if field.startswith("forecast_day") and isinstance(values, list) for item in values if isinstance(item, dict) and _parse_utc(item.get("time"))]
+    samples = sorted({item["time"]: item for item in samples}.values(), key=lambda item: _parse_utc(item["time"]))
+    end = _parse_utc(payload.get("valid_to"))
+    if not end:
+        raise ValueError("BMKG forecast validity end missing")
+    rows = []
+    for index, item in enumerate(samples):
+        start = _parse_utc(item["time"])
+        stop = min(end, _parse_utc(samples[index + 1]["time"])) if index + 1 < len(samples) else end
+        if start >= stop:
+            continue  # Final boundary sample is not a new forecast interval.
+        duration = (stop - start).total_seconds() / 3600
+        if duration > 3:
+            continue  # Missing samples must not become invented coverage.
+        row = _base_forecast(location_type=kind, location_id=f"bmkg-{kind}-{code}", location_name=str(payload.get("name") or metadata.get("name") or code), source_file=f"{kind}/{code}.json", forecast_index=index, source_url=f"{BMKG_API_BASE}{'pelabuhan' if kind == 'port' else 'perairan'}/{code}.json")
+        wind, gust, wave = _number(item.get("wind_speed")), _number(item.get("wind_gust")), _number(item.get("wave_height"))
+        row.update({
+            "bmkg_code": code, "province": metadata.get("province"),
+            # Display priority only; operational matching has separate scope checks.
+            "port_visibility_tier": 1 if kind == "port" and code in {"XB001", "XC006", "XH001", "XJ001", "XK009", "XO007", "XP003", "XX001", "XY004"} else 4,
+            "latitude": _number(metadata.get("lat")) if kind == "port" else None,
+            "longitude": _number(metadata.get("lon")) if kind == "port" else None,
+            "issued_at": payload.get("issued"), "valid_from": start.isoformat(), "valid_to": stop.isoformat(),
+            "forecast_timing_resolution": f"BMKG {duration:g}-hour forecast grid; interval between published samples",
+            "forecast_basis": "Official BMKG port-point model forecast" if kind == "port" else "Official BMKG marine-area model forecast",
+            "weather_resolution": "port-point forecast" if kind == "port" else "marine-area forecast",
+            "weather_condition": _translate_exact(item.get("weather"), WEATHER_EN),
+            "warning_description": _translate_warning(item.get("warning_desc")),
+            "wind_direction_from": _translate_exact(item.get("wind_from"), DIRECTION_EN),
+            "wind_speed_min_kn": wind, "wind_speed_max_kn": wind, "gust_kn": gust,
+            "gust_kmph": round(gust * 1.852, 2) if gust is not None else None,
+            "wave_category": _translate_exact(item.get("wave_cat"), WAVE_EN),
+            "wave_description": f"{wave:g} m" if wave is not None else None,
+            "wave_height_min_m": wave, "wave_height_max_m": wave,
+            "current_direction_to": _translate_exact(item.get("current_to"), DIRECTION_EN),
+            "current_speed_min_source": _number(item.get("current_speed")), "current_speed_max_source": _number(item.get("current_speed")),
+            "current_speed_documented_unit": "kt", "visibility_source": _number(item.get("visibility")), "visibility_documented_unit": "km",
+            "temperature_min_c": _number(item.get("temp_avg")), "temperature_max_c": _number(item.get("temp_avg")),
+            "humidity_min_pct": _number(item.get("rh_avg")), "humidity_max_pct": _number(item.get("rh_avg")),
+            "tide_height_m": _number(item.get("tides")), "geometry": geometry if kind == "water" else None,
+            "water_code": code if kind == "water" else None,
+        })
+        row["weather_description"] = _english_summary(row)
+        row["severity"] = _severity(row)
+        rows.append(row)
+    return rows
+
+
 def normalize_water(
     payload: Dict[str, Any], source_file: str,
     geometry_by_code: Dict[str, Dict[str, Any]],
@@ -334,6 +398,10 @@ class BmkgMarineWeatherManager:
 
     def _read_payload(self, path: Path) -> Dict[str, Any]:
         payload = _json_safe(json.loads(path.read_text(encoding="utf-8")))
+        geometry = payload.get("water_geometries", {})
+        for row in payload.get("rows", []):
+            if row.get("location_type") == "water" and row.get("water_code") in geometry:
+                row["geometry"] = geometry[row["water_code"]]
         return payload if payload.get("schema_version") == SCHEMA_VERSION else {}
 
     def _load_cache(self) -> None:
@@ -407,72 +475,71 @@ class BmkgMarineWeatherManager:
                 rows.extend(normalized)
         return rows, dates, errors
 
+    async def _fetch_modern(self, client, inventory, kind, geometries):
+        previous = {}
+        for row in self.payload.get("rows", []):
+            previous.setdefault(row.get("source_file"), []).append(row)
+        semaphore = asyncio.Semaphore(8)
+        async def fetch_one(meta):
+            code = str(meta["id"])
+            file_name = f"{kind}/{code}.json"
+            try:
+                async with semaphore:
+                    response = await client.get(f"{BMKG_API_BASE}{'pelabuhan' if kind == 'port' else 'perairan'}/{quote(code, safe='')}.json")
+                    response.raise_for_status()
+                    normalized = normalize_modern(response.json(), meta, kind, geometries.get(code))
+                if not normalized:
+                    raise ValueError("No usable published forecast intervals")
+                downloaded = datetime.now(timezone.utc).isoformat()
+                for row in normalized:
+                    row["fetched_at"] = downloaded
+                return normalized, None, True
+            except Exception as exc:
+                return previous.get(file_name, []), f"{file_name}: {exc}", False
+        results = await asyncio.gather(*(fetch_one(meta) for meta in inventory))
+        return [r for rows, _, _ in results for r in rows], [error for _, error, _ in results if error], sum(success for _, _, success in results)
+
     async def refresh(self, force: bool = False) -> Dict[str, Any]:
         async with self.lock:
             fetched_at = _parse_utc(self.payload.get("fetched_at"))
-            if not force and fetched_at:
+            if not force and fetched_at and self.payload.get("api_base") == BMKG_API_BASE:
                 age = datetime.now(timezone.utc) - fetched_at
                 retry_seconds = FAILED_REFRESH_RETRY_SECONDS if self.payload.get("parse_warnings") else self.refresh_seconds
                 if age.total_seconds() < retry_seconds:
                     return self.payload
-            headers = {"User-Agent": "HRP-Dashboard/1.0 (+BMKG maritime forecast visualization)"}
-            async with httpx.AsyncClient(
-                headers=headers,
-                follow_redirects=True,
-                timeout=httpx.Timeout(25.0, connect=8.0),
-            ) as client:
-                port_list_response, water_list_response, geometry_response = await asyncio.gather(
-                    client.get(BMKG_PORT_LIST),
-                    client.get(BMKG_WATER_LIST),
-                    client.get(BMKG_WATER_GEOMETRY),
-                )
-                for response in (port_list_response, water_list_response, geometry_response):
+            headers = {"User-Agent": "HRP-Dashboard/1.0 (+official BMKG maritime forecast visualization)"}
+            async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=httpx.Timeout(25.0, connect=8.0)) as client:
+                responses = await asyncio.gather(*(client.get(BMKG_API_BASE + path) for path in ("meta/port_province.json", "meta/area_province.json", "meta/wilmetos.min.geojson")))
+                for response in responses:
                     response.raise_for_status()
-                port_files = self._files(port_list_response.json())
-                water_files = self._files(water_list_response.json())
-                geometry_payload = geometry_response.json()
-                geometry_by_code = {
-                    str(feature.get("properties", {}).get("WP_1") or "").strip().upper(): feature.get("geometry")
-                    for feature in geometry_payload.get("features") or []
-                    if feature.get("geometry")
-                }
-                previous_rows = list(self.payload.get("rows") or [])
-                previous_dates = dict(self.payload.get("source_file_dates") or {})
-                port_rows, port_dates, port_errors = await self._fetch_changed(
-                    client, port_files, BMKG_PORT_FILE, normalize_port,
-                    [row for row in previous_rows if row.get("location_type") == "port"],
-                    previous_dates,
-                )
-                water_rows, water_dates, water_errors = await self._fetch_changed(
-                    client, water_files, BMKG_WATER_FILE, normalize_water,
-                    [row for row in previous_rows if row.get("location_type") == "water"],
-                    previous_dates, geometry_by_code,
-                )
-            rows = port_rows + water_rows
-            if not rows:
-                raise RuntimeError("BMKG sources returned no usable maritime forecasts")
+                port_inventory = modern_inventory(responses[0].json(), "port")
+                water_inventory = modern_inventory(responses[1].json(), "water")
+                geometries = {str(f.get("properties", {}).get("ID_MAR")): f["geometry"] for f in responses[2].json().get("features", []) if f.get("geometry") and f.get("properties", {}).get("ID_MAR")}
+                if not geometries:
+                    raise ValueError("Official BMKG marine geometry index is empty")
+                # Two bounded fetch batches: no requests to the retired public_api.
+                port_rows, port_errors, port_success = await self._fetch_modern(client, port_inventory, "port", geometries)
+                water_rows, water_errors, water_success = await self._fetch_modern(client, water_inventory, "water", geometries)
+            if not port_success and not water_success:
+                raise RuntimeError("BMKG sources unavailable; last successful snapshot retained")
             now = datetime.now(timezone.utc)
             errors = port_errors + water_errors
-            payload = _json_safe({
-                "schema_version": SCHEMA_VERSION,
-                "provider": "Badan Meteorologi, Klimatologi, dan Geofisika (BMKG)",
-                "provider_code": "bmkg",
-                "source_page": BMKG_ROOT,
-                "fetched_at": now.isoformat(),
-                "next_refresh_at": (now + timedelta(seconds=self.refresh_seconds)).isoformat(),
-                "refresh_seconds": self.refresh_seconds,
-                "coverage_note": (
-                    "Official modeled maritime forecasts. Forecasts are not observations and are not for navigation."
-                ),
-                "inventory": {"ports": len(port_files), "waters": len(water_files)},
-                "source_file_dates": {**port_dates, **water_dates},
-                "parse_warnings": errors[:50],
-                "rows": rows,
-            })
+            payload = {
+                "schema_version": SCHEMA_VERSION, "provider": "Badan Meteorologi, Klimatologi, dan Geofisika (BMKG)", "provider_code": "bmkg",
+                "source_page": BMKG_ROOT, "api_base": BMKG_API_BASE, "api_documentation": BMKG_API_DOCS,
+                "fetched_at": now.isoformat(), "next_refresh_at": (now + timedelta(seconds=self.refresh_seconds)).isoformat(), "refresh_seconds": self.refresh_seconds,
+                "coverage_note": "Official BMKG hourly / three-hourly modeled port-point and marine-area forecasts. Source current speed is knots; visibility is km. Not observations or navigation instructions.",
+                "inventory": {"ports": len(port_inventory), "waters": len(water_inventory)},
+                "successful_downloads": {"ports": port_success, "waters": water_success},
+                "parse_warnings": errors[:50], "rows": port_rows + water_rows,
+                "water_geometries": geometries,
+            }
+            # Store each official polygon once, then reattach it on cache load.
+            stored = {**payload, "rows": [{k: v for k, v in row.items() if k != "geometry"} for row in payload["rows"]]}
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-            self.cache_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            temporary = self.cache_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(stored, ensure_ascii=False, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+            temporary.replace(self.cache_path)
             self.payload = payload
             self.last_error = "; ".join(errors[:3]) if errors else None
             return payload
@@ -480,7 +547,7 @@ class BmkgMarineWeatherManager:
     def selected_payload(self, hours: int = 0) -> Dict[str, Any]:
         payload = {
             key: value for key, value in self.payload.items()
-            if key not in {"rows", "source_file_dates"}
+            if key not in {"rows", "source_file_dates", "water_geometries"}
         }
         payload["hours"] = hours
         payload["rows"] = select_forecast_rows(self.payload.get("rows") or [], hours)

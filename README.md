@@ -12,6 +12,10 @@ palette.
 
 ## Features
 
+Voyage & Tonne-Miles and AIS & Port Activity are integrated into the existing sidebar.
+See [setup, package review and walkthrough](docs/voyage-ais-workspace.md) for routing
+assumptions, permitted decoded AIS uploads, polygon configuration and accuracy limits.
+
 - Separate Energy, Ports, and Commodities map workspaces, so unrelated layers
   do not remain visible when the user changes section
 - Country and operating-status filters across energy and commodity assets
@@ -91,7 +95,10 @@ pip install -r requirements.txt
 uvicorn app:app --reload --port 8000
 ```
 
-Open http://localhost:8000
+Open http://127.0.0.1:8000. Authentication is enabled by default. Complete the
+[Microsoft registration and owner setup](docs/microsoft-access.md) before using
+the dashboard. Approved users sign in with Microsoft; other accounts receive no
+dashboard data. The setup screen is shown until credentials are configured.
 
 ### Environment variables
 
@@ -100,7 +107,9 @@ Copy `.env.example` values into your deployment environment. Important variables
 - `AISSTREAM_API_KEY`: optional live AIS vessel tracking. Never commit this value.
 - `ALLOWED_ORIGINS`: comma-separated trusted browser origins.
 - `XAI_API_KEY`: optional Grok chat integration.
-- `APP_ADMIN_TOKEN`: protects uploads, manual refreshes and Data Hub approvals. The UI asks for it only when an administrator action is attempted.
+- `MICROSOFT_CLIENT_ID`, `MICROSOFT_CLIENT_SECRET`, `AUTH_BASE_URL`: Microsoft login configuration; keep the secret server-side.
+- `AUTH_ADMIN_ISSUER`, `AUTH_ADMIN_SUBJECT`: one-time owner bootstrap from a verified Microsoft login.
+- `APP_ADMIN_TOKEN`: server automation only for explicitly designated refresh endpoints. Browser administration uses the signed-in administrator role.
 - `HRP_STORAGE_DIR`: runtime data directory. Point this to a persistent Render disk (for example `/var/data/hrp`) in production.
 - `AIS_RAW_RETENTION_DAYS`: raw AIS trail retention, default `90`; the latest position per vessel is retained separately.
 - `AIS_MAX_OBSERVATIONS`: hard cap for raw AIS observations, default `2000000`.
@@ -114,19 +123,22 @@ replace it with a newly issued environment-only key.
 
 1. Push this folder to a GitHub repo.
 2. In Render → New → Blueprint → connect the repo.
-3. Render will read `render.yaml` and create the web service.
-4. After deploy, go to Environment and add:
-   - `XAI_API_KEY` = your xAI / Grok key (optional but recommended)
+3. Use `render-auth.yaml` for the authenticated deployment: it declares paid
+   Starter compute and a persistent disk. Review the billing change before
+   applying it. The old Free `render.yaml` does not supply durable access storage.
+4. Configure Microsoft credentials, the HTTPS origin and optional provider keys
+   using [the setup guide](docs/microsoft-access.md). Bootstrap the owner after deploy.
 
 ### Option B – Manual Docker
 
 1. New → Web Service → connect repo.
 2. Runtime: Docker
-3. Plan: Free (or Starter)
+3. Plan: a paid instance with a persistent disk mounted at `/var/data/hrp`.
 4. Health check path: `/api/health`
-5. Add env var `XAI_API_KEY` if desired.
+5. Configure Microsoft authentication and `HRP_STORAGE_DIR` following the setup guide.
 
-The free tier sleeps after inactivity; first request may take ~30 s.
+Free compute cannot retain the SQLite approval/session database and is not
+supported for this authentication deployment.
 
 ---
 
@@ -156,7 +168,7 @@ from deposits, prospects, occurrences, and historical records at global scale.
 ## Verification
 
 ```bash
-python -m unittest discover -s tests -v
+APP_ENV=test APP_AUTH_ENABLED=false python -m pytest tests -q -p no:cacheprovider
 node --check static/js/app.js
 node --check static/js/app-map.js
 ```

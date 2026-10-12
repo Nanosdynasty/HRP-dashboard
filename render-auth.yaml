@@ -1,0 +1,35 @@
+# Opt-in deployment template. Does not modify an existing service automatically.
+# A paid instance is required for a persistent disk; review billing before applying.
+services:
+  - type: web
+    name: hrp-dashboard
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    disk:
+      name: hrp-storage
+      mountPath: /var/data/hrp
+      sizeGB: 1
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: HRP_STORAGE_DIR
+        value: /var/data/hrp
+      - key: AUTH_BASE_URL
+        sync: false
+      - key: MICROSOFT_CLIENT_ID
+        sync: false
+      - key: MICROSOFT_CLIENT_SECRET
+        sync: false
+      - key: AUTH_ADMIN_ISSUER
+        sync: false
+      - key: AUTH_ADMIN_SUBJECT
+        sync: false
+      - key: AISSTREAM_API_KEY
+        sync: false
+      - key: XAI_API_KEY
+        sync: false
+      - key: APP_ADMIN_TOKEN
+        sync: false
+      - key: AIS_RAW_RETENTION_DAYS
+        value: "90"

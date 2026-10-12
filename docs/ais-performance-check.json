@@ -1,0 +1,10 @@
+{
+  "observations": 30000,
+  "vessels": 1250,
+  "inferred_visits": 2500,
+  "ingest_seconds": 0.707,
+  "load_seconds": 0.152,
+  "analysis_seconds": 1.089,
+  "database_bytes": 11653120,
+  "synthetic": true
+}

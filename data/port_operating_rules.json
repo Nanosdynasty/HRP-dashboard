@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-09-28",
+  "rules": [
+    {
+      "id": "hedland-2026-weather-instruction",
+      "port_id": "54620",
+      "scope_type": "port",
+      "operations": ["berthing", "pilotage", "approach"],
+      "kind": "qualitative_instruction",
+      "version": "A941965-April-2026-section-7.20",
+      "publication_date": "2026-04",
+      "source_url": "https://www.pilbaraports.com.au/about-pilbara-ports/publications/forms-and-publications/forms-and-publications/handbook/2026/april/port-of-port-hedland-port-handbook",
+      "source_title": "Port of Port Hedland Handbook, section 7.20",
+      "note": "BOM wind warning categories are planning context, not published numerical berthing or loading shutdown limits. Vessel-specific DUKC and authority instructions remain separate."
+    }
+  ],
+  "limitation": "No numerical equipment or berth-specific limit is promoted without a verified scope, metric, unit, publication date and version. General screening applies where those limits are not documented."
+}

@@ -27,6 +27,18 @@ class PortApiTests(unittest.TestCase):
     def setUpClass(cls):
         cls.client = TestClient(app)
 
+    def test_port_detail_exposes_source_backed_berth_use(self):
+        by_name = {port["name"].upper(): port for port in app_module.ports.ports}
+        for name, expected_count in (("PARADIP", 24), ("MUNDRA", 28), ("PORT HEDLAND", 19)):
+            response = self.client.get(f"/api/ports/{by_name[name]['id']}")
+            self.assertEqual(response.status_code, 200)
+            detail = response.json()["berth_detail"]
+            self.assertEqual(detail["total_berths"], expected_count)
+            self.assertTrue(detail["berths"])
+            self.assertTrue(all(row["source_url"] for row in detail["berths"]))
+        paradip = self.client.get(f"/api/ports/{by_name['PARADIP']['id']}").json()["berth_detail"]
+        self.assertIn("Coking coal import", {row["use"] for row in paradip["berths"]})
+
     def test_health_reports_port_catalog_and_secret_state(self):
         response = self.client.get("/api/health")
         self.assertEqual(response.status_code, 200)
@@ -462,6 +474,16 @@ class PortApiTests(unittest.TestCase):
         )
         self.assertEqual(payload["fuel"]["consumption_tpd"], 25)
         self.assertIn("not for navigation", payload["warnings"][0].lower())
+        self.assertIn("eca_segments", payload)
+        segments = payload["eca_segments"]
+        self.assertTrue(segments)
+        self.assertEqual(segments[0]["coordinates"][0], payload["coordinates"][0])
+        self.assertEqual(segments[-1]["coordinates"][-1], payload["coordinates"][-1])
+        self.assertAlmostEqual(
+            payload["zones"]["eca_distance_nm"],
+            sum(item["distance_nm"] for item in segments if item["in_eca"]),
+            delta=0.05,
+        )
 
     def test_india_coal_workspace_uses_verified_assets_without_fake_metrics(self):
         summary = self.client.get("/api/coal/summary")
@@ -686,13 +708,11 @@ class PortApiTests(unittest.TestCase):
         self.assertIn("Coal stock availability", html)
         self.assertIn("Cumulative generation", html)
         self.assertIn("Sector-wise PLF", html)
-        self.assertIn("app.js?v=20260901-imd-retry-1", html)
-        self.assertIn('id="gtt-back-main"', html)
-        self.assertIn('class="gtt-app-sidebar"', html)
-        self.assertIn("AI Insights", html)
-        self.assertIn("GTT Trade Intelligence", html)
-        self.assertIn('data-gtt-tab="overview"', html)
-        self.assertIn('id="gtt-compare-datasets"', html)
+        self.assertRegex(html, r'app\.js\?v=[a-zA-Z0-9-]+')
+        self.assertNotIn('data-mode="gtt"', html)
+        self.assertNotIn("GTT Trade Intelligence", html)
+        self.assertIn('data-mode="voyage-analysis"', html)
+        self.assertIn('data-mode="port-activity"', html)
         self.assertIn('<option value="australia">Australia · BOM coastal waters</option>', html)
         self.assertIn('<option value="united_states">United States · NOAA/NWS marine</option>', html)
         self.assertIn('<option value="canada">Canada · Environment Canada marine</option>', html)

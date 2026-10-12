@@ -689,9 +689,12 @@ class SeaMarineWeatherManager:
             for provider, result in zip(providers, results):
                 if isinstance(result, Exception):
                     errors.append(f"{provider}: {result}")
-                    rows.extend(row for row in previous if row.get("provider_code") == provider)
+                    rows.extend({**row, "fetched_at": row.get("fetched_at") or fetched} for row in previous if row.get("provider_code") == provider)
                 else:
-                    rows.extend(result)
+                    rows.extend({**row, "fetched_at": datetime.now(timezone.utc).isoformat()} for row in result)
+            if not any(not isinstance(result, Exception) and result for result in results):
+                self.last_error = "; ".join(errors) or "No new forecast records returned"
+                raise RuntimeError(self.last_error)
             if not rows:
                 raise RuntimeError("No official Southeast Asian forecast rows were available")
             now = datetime.now(timezone.utc)
@@ -747,7 +750,7 @@ class SeaMarineWeatherManager:
             except Exception as exc:
                 self.last_error = str(exc)
                 log.warning("SEA maritime refresh failed: %s", exc)
-            await asyncio.sleep(self.refresh_seconds)
+            await asyncio.sleep(min(self.refresh_seconds, 300) if self.last_error else self.refresh_seconds)
 
     def start(self) -> None:
         if not self.task or self.task.done():

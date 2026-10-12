@@ -625,12 +625,12 @@ def _gatun_record(pdf_bytes: bytes) -> Dict[str, Any]:
         raise ValueError("ACP Gatún indicator did not expose the official level")
     observed = None
     if date_match:
-        observed = datetime.strptime(date_match.group(1).replace(".", ""), "%b %d, %Y").replace(tzinfo=timezone.utc).isoformat()
+        observed = datetime.strptime(date_match.group(1).replace(".", ""), "%b %d, %Y").replace(tzinfo=timezone(timedelta(hours=-5))).isoformat()
     level = float(level_match.group(1))
     row = {
         "id": "acp-gatun-lake", "station": "Gatún Lake", "waterbody": "Gatún Lake / Panama Canal",
         "basin": "Panama Canal Watershed", "country": "Panama", "waterbody_type": "reservoir",
-        "latitude": 9.18, "longitude": -79.85, "observed_at": observed,
+        "latitude": 9.18, "longitude": -79.85, "observed_at": observed, "date_precision": "day",
         "level": level, "level_unit": "ft", "discharge": None, "discharge_unit": None,
         "status": "normal", "status_label": "Official operating indicator",
         "navigation_status": "Official maximum transit drafts published",
@@ -663,6 +663,11 @@ def _indonesia_records(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         observations = sorted((str(key), _safe_number(value)) for key, value in telemetry.items())
         observations = [item for item in observations if item[1] is not None]
         if not observations:
+            coordinates = (feature.get("geometry") or {}).get("coordinates") or [None, None]
+            waterbody, basin = INDONESIA_STATIONS[name]
+            missing = {"id": f"sihka-{properties.get('id')}", "station": properties.get("name"), "waterbody": waterbody, "basin": basin, "country": "Indonesia", "waterbody_type": "river", "latitude": coordinates[1], "longitude": coordinates[0], "observed_at": None, "level": None, "level_unit": "m", "status": "unavailable", "status_label": "Telemetry unavailable from source", "freshness": "unknown", "source_name": "Indonesia Ministry of Public Works SIHKA", "source_url": INDONESIA_SIHKA_PAGE, "source_method": "Official public telemetry service", "quality_note": "Station exists in the official inventory, but no latest telemetry is supplied.", "history": []}
+            missing.update(_comparison_fields(None, [], "m", ""))
+            rows.append(missing)
             continue
         observed_at, level = observations[-1]
         if not re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", observed_at):
@@ -691,7 +696,7 @@ def _indonesia_records(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
             "quality_note": "The public asset feed supplies the latest telemetry but not a historical normal series.",
             "extra_metrics": thresholds,
             "history": [
-                {"observed_at": timestamp, "level": value, "level_unit": "m"}
+                {"observed_at": timestamp if re.search(r"(?:Z|[+-]\d{2}:?\d{2})$", timestamp) else f"{timestamp}+07:00", "level": value, "level_unit": "m"}
                 for timestamp, value in observations
             ],
         }
@@ -867,8 +872,20 @@ def _three_gorges_yichang_record(path: Path = THREE_GORGES_DATA_PATH) -> Dict[st
     return row
 
 
+def linked_canal_records(gauges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    canals = filter_commercial_waterways(_canal_records())
+    gatun = next((r for r in gauges if r.get("id") == "acp-gatun-lake"), None)
+    if gatun:
+        canal = next(r for r in canals if r["id"] == "canal-panama")
+        canal["extra_metrics"] = {**canal["extra_metrics"], "Gatún lake level": f"{gatun['level']} {gatun['level_unit']}" if gatun.get("level") is not None else "Not reported", "Gatún observation date": gatun.get("observed_at"), **(gatun.get("extra_metrics") or {})}
+        canal["indicator_observed_at"] = gatun.get("observed_at")
+        canal["indicator_source_url"] = gatun.get("source_url")
+        canal["quality_note"] += " Lake elevation and maximum draft indicators are linked separately; these are not queue or delay measurements."
+    return canals
+
+
 class RiverLevelManager:
-    def __init__(self, cache_path: Path, refresh_seconds: int = 3600):
+    def __init__(self, cache_path: Path, refresh_seconds: int = 300):
         self.cache_path = cache_path
         self.refresh_seconds = refresh_seconds
         self.payload: Dict[str, Any] = {}
@@ -882,7 +899,7 @@ class RiverLevelManager:
             data = json.loads(self.cache_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 data["rows"] = filter_commercial_waterways(data.get("rows") or [])
-                data["rows"] = [row for row in data["rows"] if row.get("waterbody_type") != "canal"] + _canal_records()
+                data["rows"] = [row for row in data["rows"] if row.get("waterbody_type") != "canal"] + linked_canal_records(data["rows"])
                 data["sources"] = SOURCE_CATALOG
                 data["source_count"] = len(SOURCE_CATALOG)
                 data["connected_source_count"] = sum(
@@ -966,12 +983,14 @@ class RiverLevelManager:
             for name, result in zip(names, results):
                 if isinstance(result, Exception):
                     errors.append(f"{name}: {result}")
+                    prefixes = {"NOAA": "noaa-", "PEGELONLINE": "pegel-", "ANA Amazon": "ana-", "Panama Canal Authority": "acp-", "Indonesia SIHKA": "sihka-", "Three Gorges Reservoir Watch": "china-"}
+                    rows.extend({**r, "source_error": str(result), "freshness": _freshness(r.get("observed_at"))} for r in self.payload.get("rows", []) if str(r.get("id", "")).startswith(prefixes[name]))
                 else:
                     rows.extend(result)
             if not rows and self.payload.get("rows"):
                 self.last_error = "; ".join(errors) or "No official source returned data"
                 return self.payload
-            rows = filter_commercial_waterways(rows) + _canal_records()
+            rows = filter_commercial_waterways(rows) + linked_canal_records(rows)
             rows.sort(key=lambda row: (row.get("waterbody") or "", row.get("station") or ""))
             self.payload = {
                 "fetched_at": _iso_now(), "rows": rows, "sources": SOURCE_CATALOG,

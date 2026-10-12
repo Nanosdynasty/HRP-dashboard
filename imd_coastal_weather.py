@@ -32,7 +32,7 @@ IMD_COASTAL_BULLETINS = [
         for item in (2, 3, 4, 5, 6, 7)
     ],
 ]
-REFRESH_SECONDS = 5 * 60 * 60
+REFRESH_SECONDS = 3 * 60 * 60
 # A source or network issue should not leave the dashboard on an old bulletin for
 # the entire regular refresh window.  Failed collection attempts are retried on a
 # short, bounded interval while successful collection remains every five hours.
@@ -256,7 +256,7 @@ def expand_imd_records(records: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]
             "country": "India",
             "issued_at": record.get("source_issue_time"),
             "valid_from": record.get("valid_date"),
-            "valid_to": None,
+            "valid_to": record.get("valid_to"),
             "weather_condition": record.get("rainfall_category") or "Coastal forecast",
             "weather_description": record.get("summary"),
             "warning_description": None,
@@ -319,6 +319,7 @@ def _number_range(text: str, units: str) -> Optional[tuple[float, float]]:
 
 def _rain_category(text: str) -> Optional[str]:
     lowered = text.lower()
+    lowered = re.sub(r"\b(?:no|without)\s+(?:significant\s+)?(?:rain(?:fall)?|precipitation)\b|\bdry weather\b", "", lowered)
     categories = [
         ("extremely heavy", "Extremely heavy"),
         ("very heavy", "Very heavy"),
@@ -440,6 +441,7 @@ def parse_coastal_bulletin_html(
         record["source_url"] = source_url
         record["source_issue_time"] = issue_text
         record["valid_date"] = valid_text
+        record["valid_to"] = valid.group(2).strip() if valid else None
         record["summary"] = _summary(record)
         records.append(record)
     return records
@@ -737,6 +739,8 @@ class ImdCoastalWeatherManager:
             wait_seconds = self.refresh_seconds
             try:
                 await self.refresh()
+                if self.last_error:
+                    wait_seconds = min(self.refresh_seconds, FAILED_REFRESH_RETRY_SECONDS)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

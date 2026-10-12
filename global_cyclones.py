@@ -22,7 +22,8 @@ from shapely.geometry import mapping, shape
 
 log = logging.getLogger("global-cyclones")
 REFRESH_SECONDS = 60 * 60
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+FAILED_REFRESH_RETRY_SECONDS = 5 * 60
 USER_AGENT = "HRP-Dashboard/1.0 (global tropical cyclone visualization)"
 GDACS_SEARCH = "https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH"
 
@@ -280,8 +281,15 @@ def build_cyclone_records(
             "basin": basin,
             "ocean_or_sea": local_sea,
             "issued_at": props.get("datemodified"),
-            "valid_from": props.get("fromdate"),
-            "valid_to": props.get("todate"),
+            "event_started_at": props.get("fromdate"),
+            "source_last_observed_at": props.get("todate"),
+            "storm_active": True,
+            "valid_from": props.get("todate"),
+            # GDACS event todate is the latest event time, not the expiry of
+            # the active warning or the end of the forecast geometry.
+            "valid_to": None,
+            "validity_basis": "GDACS current-event flag and latest event time within 36 hours; forecast expiry not published",
+            "forecast_timing_resolution": "Forecast geometry supplied; individual forecast waypoint times not published by this adapter",
             "weather_condition": (props.get("severitydata") or {}).get("severitytext") or "Tropical cyclone",
             "weather_description": props.get("description"),
             "warning_description": f"{alert} GDACS tropical-cyclone alert",
@@ -341,7 +349,7 @@ class GlobalCycloneManager:
     async def refresh(self, force: bool = False) -> Dict[str, Any]:
         async with self._lock:
             fetched = _parse_date(self.payload.get("fetched_at")) if self.payload else None
-            if not force and fetched and (datetime.now(timezone.utc) - fetched).total_seconds() < self.refresh_seconds:
+            if not force and not self.last_error and fetched and (datetime.now(timezone.utc) - fetched).total_seconds() < self.refresh_seconds:
                 return self.payload
             now = datetime.now(timezone.utc)
             params = {
@@ -371,7 +379,7 @@ class GlobalCycloneManager:
                         continue
                     geometry_by_event[str((feature.get("properties") or {}).get("eventid"))] = result
                 rows = build_cyclone_records({"features": active}, geometry_by_event, self.ports, now)
-                self.payload = {
+                payload = {
                     "schema_version": SCHEMA_VERSION,
                     "provider": "GDACS",
                     "fetched_at": now.isoformat(),
@@ -382,7 +390,10 @@ class GlobalCycloneManager:
                     "source_attribution": "Global Disaster Alert and Coordination System (GDACS), UN–European Commission/JRC",
                 }
                 self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-                self.cache_path.write_text(json.dumps(self.payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+                temporary = self.cache_path.with_suffix(".tmp")
+                temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False), encoding="utf-8")
+                temporary.replace(self.cache_path)
+                self.payload = payload
                 self.last_error = None
             except Exception as exc:
                 self.last_error = str(exc)
@@ -399,7 +410,7 @@ class GlobalCycloneManager:
                 raise
             except Exception as exc:
                 log.warning("Global cyclone refresh failed: %s", exc)
-            await asyncio.sleep(self.refresh_seconds)
+            await asyncio.sleep(FAILED_REFRESH_RETRY_SECONDS if self.last_error else self.refresh_seconds)
 
     def start(self) -> None:
         if self._task is None or self._task.done():

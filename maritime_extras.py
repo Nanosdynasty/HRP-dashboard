@@ -8,11 +8,13 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import math
+from shapely.geometry import LineString, Point, shape
 
 import httpx
 
 BASE_DIR = Path(__file__).parent
 ZONES_PATH = BASE_DIR / "data" / "zones.json"
+ECA_PATH = BASE_DIR / "data" / "imo_eca_verified.geojson"
 
 # ---------------------------------------------------------------------------
 # WPI letter-code maps (Pub 150)
@@ -94,41 +96,17 @@ def enrich_port_fields(row: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 _zones_cache: Optional[Dict] = None
 
-_IMO_ECA_FEATURES = [
-    ("eca-baltic-sea", "Baltic Sea ECA", [[9.0, 54.0], [30.0, 54.0], [30.0, 66.0], [9.0, 66.0], [9.0, 54.0]]),
-    ("eca-north-sea", "North Sea ECA", [[-5.0, 48.0], [13.0, 48.0], [13.0, 62.0], [-5.0, 62.0], [-5.0, 48.0]]),
-    ("eca-north-american", "North American ECA", [[-170.0, 15.0], [-45.0, 15.0], [-45.0, 75.0], [-170.0, 75.0], [-170.0, 15.0]]),
-    ("eca-us-caribbean", "United States Caribbean Sea ECA", [[-90.0, 8.0], [-60.0, 8.0], [-60.0, 25.0], [-90.0, 25.0], [-90.0, 8.0]]),
-    ("eca-mediterranean", "Mediterranean Sea ECA", [[-6.0, 30.0], [37.0, 30.0], [37.0, 46.0], [-6.0, 46.0], [-6.0, 30.0]]),
-    ("eca-canadian-arctic", "Canadian Arctic ECA", [[-141.0, 60.0], [-60.0, 60.0], [-60.0, 85.0], [-141.0, 85.0], [-141.0, 60.0]]),
-    ("eca-norwegian-sea", "Norwegian Sea ECA", [[-12.0, 60.0], [15.0, 60.0], [15.0, 72.0], [-12.0, 72.0], [-12.0, 60.0]]),
-]
-
-
 def _append_eca_features(payload: Dict) -> Dict:
     features = payload.setdefault("features", [])
     existing = {str((item.get("properties") or {}).get("id")) for item in features}
-    for zone_id, name, ring in _IMO_ECA_FEATURES:
-        if zone_id in existing:
-            continue
-        features.append({
-            "type": "Feature",
-            "geometry": {"type": "Polygon", "coordinates": [ring]},
-            "properties": {
-                "id": zone_id,
-                "name": name,
-                "risk_family": "eca",
-                "zone_type": "ECA",
-                "description": "IMO MARPOL Annex VI Emission Control Area; display envelope for route screening.",
-                "boundary_quality": "official_area_envelope",
-                "display_scope": "water_only",
-                "routing_policy": "mgo_compliance_warning",
-                "source_title": "IMO Emission Control Areas",
-                "source_url": "https://www.imo.org/en/ourwork/environment/pages/emission-control-areas-%28ecas%29-designated-under-regulation-13-of-marpol-annex-vi-%28nox-emission-control%29.aspx",
-                "source_date": "2026-09-16",
-            },
-        })
-    payload.setdefault("metadata", {})["eca_source"] = "IMO MARPOL Annex VI"
+    if ECA_PATH.exists():
+        snapshot = json.loads(ECA_PATH.read_text(encoding="utf-8"))
+        for feature in snapshot.get("features", []):
+            if str((feature.get("properties") or {}).get("id")) not in existing:
+                features.append(feature)
+        payload.setdefault("metadata", {})["eca_snapshot"] = snapshot.get("metadata", {})
+    else:
+        payload.setdefault("metadata", {})["eca_limitation"] = "Verified ECA geometry unavailable; no ECA route is highlighted."
     return payload
 
 
@@ -232,6 +210,61 @@ def _segment_samples(
         yield lon, lat, step_nm
 
 
+def _intersection_points(geometry):
+    if geometry.is_empty:
+        return
+    if geometry.geom_type == "Point":
+        yield geometry
+    elif geometry.geom_type in {"LineString", "LinearRing"}:
+        yield Point(geometry.coords[0])
+        yield Point(geometry.coords[-1])
+    elif hasattr(geometry, "geoms"):
+        for part in geometry.geoms:
+            yield from _intersection_points(part)
+
+
+def _split_route_eca(coords: List[List[float]], features: List[Dict]) -> List[Dict[str, Any]]:
+    """Split displayed straight route legs at coast-clipped ECA boundaries."""
+    ecas = [(str(f["properties"]["id"]), shape(f["geometry"])) for f in features
+            if (f.get("properties") or {}).get("risk_family") == "eca"
+            and f["properties"].get("boundary_quality") != "official_area_envelope"]
+    segments: List[Dict[str, Any]] = []
+    for left, right in zip(coords, coords[1:]):
+        if left == right:
+            continue
+        # The ordinary Leaflet line and these geometries use the same lon/lat
+        # interpolation. A dateline jump cannot be safely classified here.
+        if abs(right[0] - left[0]) > 180:
+            pieces = [(left, right, (), "unverified")]
+        else:
+            line = LineString([left, right])
+            boundaries = [0.0, 1.0]
+            for _, geometry in ecas:
+                if not line.intersects(geometry):
+                    continue
+                for crossing in _intersection_points(line.intersection(geometry.boundary)):
+                    boundaries.append(line.project(crossing) / line.length)
+            boundaries = sorted(set(round(max(0, min(1, value)), 12) for value in boundaries))
+            pieces = []
+            for start, end in zip(boundaries, boundaries[1:]):
+                if end - start <= 1e-12:
+                    continue
+                midpoint = line.interpolate((start + end) * line.length / 2)
+                inside = tuple(zone_id for zone_id, geometry in ecas if geometry.contains(midpoint))
+                first, last = line.interpolate(start * line.length), line.interpolate(end * line.length)
+                pieces.append(([first.x, first.y], [last.x, last.y], inside, "verified" if ecas else "unverified"))
+        for first, last, zone_ids, quality in pieces:
+            if segments and segments[-1]["zone_ids"] == list(zone_ids) and segments[-1]["boundary_status"] == quality and segments[-1]["coordinates"][-1] == first:
+                segments[-1]["coordinates"].append(last)
+            else:
+                segments.append({"coordinates": [first, last], "in_eca": bool(zone_ids),
+                                 "zone_ids": list(zone_ids), "boundary_status": quality})
+    for item in segments:
+        item["distance_nm"] = round(sum(_haversine_nm(a, b) for a, b in
+                                         zip(item["coordinates"], item["coordinates"][1:])), 3)
+    return segments
+
+
 def analyze_route_zones(coords: List[List[float]]) -> Dict[str, Any]:
     """
     Measure route exposure to JWC listed waters and analytical piracy-watch
@@ -240,6 +273,7 @@ def analyze_route_zones(coords: List[List[float]]) -> Dict[str, Any]:
     """
     zones = load_zones()
     features = zones.get("features", [])
+    eca_segments = _split_route_eca(coords, features)
     exposure_by_id: Dict[str, float] = {}
     total_distance_nm = 0.0
     for index in range(1, len(coords)):
@@ -249,6 +283,8 @@ def analyze_route_zones(coords: List[List[float]]) -> Dict[str, Any]:
         for lon, lat, step_nm in _segment_samples(left, right):
             for feature in features:
                 props = feature.get("properties") or {}
+                if props.get("risk_family") == "eca":
+                    continue
                 if _feature_contains(feature, lon, lat):
                     zone_id = str(props.get("id") or props.get("name"))
                     exposure_by_id[zone_id] = (
@@ -288,10 +324,26 @@ def analyze_route_zones(coords: List[List[float]]) -> Dict[str, Any]:
         for item in exposures
         if item["risk_family"] == "piracy"
     )
-    eca_distance_nm = sum(
-        item["distance_nm"] for item in exposures
-        if str(item.get("risk_family") or "").lower() == "eca"
-    )
+    eca_distance_nm = sum(item["distance_nm"] for item in eca_segments if item["in_eca"])
+    eca_by_id: Dict[str, float] = {}
+    for segment in eca_segments:
+        for zone_id in segment["zone_ids"]:
+            eca_by_id[zone_id] = eca_by_id.get(zone_id, 0.0) + segment["distance_nm"]
+    eca_zones = []
+    for feature in features:
+        props = feature.get("properties") or {}
+        if props.get("risk_family") != "eca":
+            continue
+        distance_nm = eca_by_id.get(str(props.get("id")), 0.0)
+        if distance_nm <= 0.05:
+            continue
+        eca_zones.append({"id": props.get("id"), "name": props.get("name"),
+                          "risk_family": "eca", "zone_type": "ECA",
+                          "source_url": props.get("source_url"),
+                          "boundary_quality": props.get("boundary_quality"),
+                          "distance_nm": round(distance_nm, 1),
+                          "fraction": round(distance_nm / total_distance_nm, 4) if total_distance_nm else 0.0})
+    exposures.extend(eca_zones)
     return {
         "exposures": exposures,
         "jwc_zones": [
@@ -311,18 +363,18 @@ def analyze_route_zones(coords: List[List[float]]) -> Dict[str, Any]:
             4,
         ),
         "route_distance_nm": round(total_distance_nm, 1),
-        "eca_zones": [
-            item for item in exposures if str(item.get("risk_family") or "").lower() == "eca"
-        ],
+        "eca_zones": eca_zones,
+        "eca_segments": eca_segments,
+        "eca_boundary_status": "verified" if features and any(
+            (f.get("properties") or {}).get("risk_family") == "eca" for f in features
+        ) and all(item["boundary_status"] == "verified" for item in eca_segments) else "unverified",
         "eca_distance_nm": round(eca_distance_nm, 1),
         "eca_fraction": round(
             eca_distance_nm
             / total_distance_nm if total_distance_nm else 0.0,
             4,
         ),
-        "requires_mgo": any(
-            str(item.get("risk_family") or "").lower() == "eca" for item in exposures
-        ),
+        "requires_mgo": eca_distance_nm > 0,
     }
 
 

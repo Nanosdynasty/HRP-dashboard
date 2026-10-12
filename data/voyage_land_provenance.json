@@ -1,0 +1,7 @@
+{
+  "source_url": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_land.geojson",
+  "title": "Natural Earth 1:50m land (public domain)",
+  "retrieved_at": "2026-09-28",
+  "sha256": "e874b27a51d146452be360cafb3cc50c86001074a67d534113e6534682f9826b",
+  "limitation": "Generalized coastline for inland screening, not navigational charts."
+}

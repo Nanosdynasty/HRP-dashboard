@@ -10,9 +10,9 @@ from news_intelligence import NewsIntelligenceManager, _article_topics, _commerc
 
 
 class NewsIntelligenceTests(unittest.TestCase):
-    def test_relevance_gate_rejects_commodity_or_power_only_headlines(self):
-        self.assertEqual(_article_topics("Coal-fired power output rises after a new policy"), [])
-        self.assertEqual(_article_topics("Iron ore and steel prices move on China demand"), [])
+    def test_relevance_gate_includes_commodity_fundamentals_without_shipping_terms(self):
+        self.assertIn("cargo_trade", _article_topics("Coal-fired power output rises after a new policy"))
+        self.assertIn("cargo_trade", _article_topics("Iron ore and steel prices move on China demand"))
         self.assertEqual(_article_topics("Airport expansion wins sports award"), [])
 
     def test_relevance_gate_keeps_chartering_bulk_cargo_and_port_impacts(self):

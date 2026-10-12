@@ -6,6 +6,7 @@ those concepts separate so an absent closure notice is never rendered as "Open".
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -43,7 +44,11 @@ def _parse_time(value: Any) -> Optional[datetime]:
     if not value:
         return None
     try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        text = str(value).strip()
+        imd_time = re.fullmatch(r"(\d{1,2})\s+UTC of\s+(\d{4}-\d{2}-\d{2})", text, re.I)
+        if imd_time:
+            text = f"{imd_time[2]}T{int(imd_time[1]):02d}:00:00+00:00"
+        parsed = datetime.fromisoformat(text.replace(" UTC", "+00:00").replace("Z", "+00:00"))
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return None
@@ -95,11 +100,19 @@ def normalize_coastal_weather_row(
     row["source_authority"] = row.get("source_agency") or row.get("provider")
     row["fetched_at"] = row.get("fetched_at") or fetched_at
 
-    issued_time = _parse_time(row.get("issued_at")) or _parse_time(fetched_at) or _parse_time(row.get("valid_from"))
+    issued_time = _parse_time(row.get("issued_at")) or _parse_time(row.get("valid_from")) or _parse_time(row.get("fetched_at"))
     valid_to = _parse_time(row.get("valid_to"))
     age_hours = max(0.0, round((now - issued_time.astimezone(timezone.utc)).total_seconds() / 3600, 1)) if issued_time else None
     row["freshness_age_hours"] = age_hours
-    expired = bool(valid_to and now > valid_to.astimezone(timezone.utc) + timedelta(hours=6))
+    expired = bool(valid_to and now > valid_to.astimezone(timezone.utc))
+    if location_type == "storm" and row.get("storm_active") is not None:
+        observed = _parse_time(row.get("source_last_observed_at"))
+        checked = _parse_time(row.get("fetched_at"))
+        expired = expired or row["storm_active"] is not True or not observed or not checked or any(
+            now - stamp.astimezone(timezone.utc) > timedelta(hours=36)
+            for stamp in (observed, checked) if stamp
+        )
+    row["forecast_expired"] = expired
     row["freshness_status"] = "unknown" if age_hours is None else ("stale" if expired or age_hours > 36 else "current")
 
     quality_flags: List[str] = []

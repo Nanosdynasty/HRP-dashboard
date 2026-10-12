@@ -1064,7 +1064,7 @@ button, summary, label, select { -webkit-tap-highlight-color: transparent; }
   font-weight: 700;
   line-height: 1.45;
 }
-.weather-view-switch { margin: 10px 0 0; }
+.weather-view-switch { margin: 10px 0 0; grid-template-columns: repeat(3, minmax(0,1fr)); }
 .weather-data-surface {
   position: absolute;
   inset: 0;
@@ -1216,6 +1216,14 @@ button, summary, label, select { -webkit-tap-highlight-color: transparent; }
 .facility-list small { margin-top: 4px; color: #536a7a; font-size: 8px; line-height: 1.4; }
 .facility-list em { margin-top: 4px; color: #8c5b22; font-size: 8px; font-style: normal; line-height: 1.4; }
 .port-spec-more { margin: 8px 0 0; color: #7c8790; font-size: 8px; }
+.port-berth-scope { margin: 0 0 9px; color: #586773; font-size: 10px; }
+.port-berth-counts { margin-bottom: 10px; }
+.port-berth-table-wrap { max-width: 100%; overflow-x: auto; }
+.port-berth-table { width: 100%; min-width: 480px; border-collapse: collapse; font-size: 10px; }
+.port-berth-table th, .port-berth-table td { padding: 9px 7px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.port-berth-table thead th { color: #62717d; background: #f3f5f6; font-size: 9px; text-transform: uppercase; }
+.port-berth-table tbody th { color: var(--hrp-navy); min-width: 110px; }
+.port-berth-table a { color: var(--hrp-blue); white-space: nowrap; }
 .commodity-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .commodity-chips span { padding: 7px 9px; color: #68747e; background: #f3f5f6; font-size: 8px; }
 .commodity-chips strong { display: block; margin-bottom: 2px; color: var(--hrp-navy); font-size: 8px; }
@@ -2226,3 +2234,38 @@ section[data-gtt-panel="overview"] > .gtt-kpis { order:2; margin-top:11px; }
   .datahub-workbench > section > header { align-items: flex-start; flex-direction: column; }
   .datahub-catalog table { min-width: 680px; }
 }
+/* Dry-bulk outlook keeps scope, forecast risk and reported status visible. */
+.route-eca-legend { display:flex; flex-wrap:wrap; gap:6px 16px; margin:9px 0; font-size:12px; color:#26354a; }
+.route-eca-legend span { display:inline-flex; align-items:center; gap:6px; }
+.route-eca-legend i { display:inline-block; width:24px; border-top:4px solid; border-radius:2px; }
+.route-eca-legend i.outside { border-color:#db2f34; }
+.route-eca-legend i.inside { border-color:#168a4b; }
+.route-eca-warning { color:#8a4b08; font-size:12px; }
+#port-outlook-workspace { padding: 16px; }
+.outlook-method { color: #34445b; line-height: 1.6; max-width: 1050px; }
+.outlook-filters { display: grid; grid-template-columns: repeat(3,minmax(150px,1fr)); gap: 12px; padding: 16px; background: #f2f5f8; border: 1px solid #d5dfe9; }
+.outlook-filters label { display: grid; gap: 6px; font-size: 12px; font-weight: 700; color: #283e59; }
+.outlook-filters input,.outlook-filters select { min-width: 0; padding: 10px; border: 1px solid #bacbdc; background: white; font: inherit; }
+.outlook-filters button,.outlook-pagination button,#outlook-detail > button,#outlook-history-load { padding: 10px 14px; border: 1px solid #c1cedc; background: #073b70; color: white; font-weight: 700; cursor: pointer; }
+.outlook-pagination button:disabled { opacity: .4; cursor: default; }
+.outlook-legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; padding: 12px 0; color: #77828e; }
+.outlook-confirmed { color: #b51f36; } .outlook-limit { color: #bc5b14; } .outlook-watch { color: #ac7600; } .outlook-clear { color: #287058; }
+#outlook-map { height: 320px; width: 100%; border: 1px solid #cbd6e2; z-index: 0; }
+.outlook-table { overflow-x: auto; margin-top: 16px; }
+.outlook-table table { border-collapse: collapse; width: 100%; min-width: 1000px; font-size: 13px; }
+.outlook-table th,.outlook-table td { padding: 12px; text-align: left; vertical-align: top; border-bottom: 1px solid #d5dfe9; }
+.outlook-table th { background: #edf2f7; }
+.outlook-table th button,.outlook-row-link { padding: 0; color: #073b70; background: none; border: 0; font: inherit; font-weight: 700; text-align: left; cursor: pointer; }
+.outlook-table small { display: block; color: #5f6d7e; line-height: 1.5; max-width: 320px; margin-top: 6px; }
+.outlook-badge { color: var(--assessment-color); border: 1px solid currentColor; border-radius: 4px; padding: 4px 6px; display: inline-block; font-size: 12px; font-weight: 700; }
+.outlook-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 12px 0; font-size: 12px; }
+#outlook-detail,.outlook-evidence { margin: 16px 0; padding: 16px; border: 1px solid #cbd6e2; background: #f8fafc; line-height: 1.6; overflow-wrap: anywhere; }
+#port-outlook-card { margin-top: 20px; border-top: 1px solid #d5dfe9; padding-top: 12px; overflow-wrap: anywhere; }
+#port-outlook-card details { padding: 10px 0; border-bottom: 1px solid #d5dfe9; }
+#port-outlook-card summary { cursor: pointer; font-size: 12px; line-height: 1.5; }
+#port-outlook-card p { font-size: 12px; line-height: 1.5; }
+@media(max-width: 720px) { .outlook-filters { grid-template-columns: repeat(2,minmax(0,1fr)); padding: 10px; } #port-outlook-workspace { padding: 8px; } #outlook-map { height: 260px; } .outlook-pagination { flex-wrap: wrap; } }
+@media(max-width: 420px) { .outlook-filters { grid-template-columns: 1fr; } }
+
+/* Intelligence archive: shared dashboard colours and accessible dense lists. */
+.intelligence-filters{display:flex;flex-wrap:wrap;gap:12px;background:#fff;padding:18px;border:1px solid #dbe2e9;margin:15px 0}.intelligence-filters label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:#45546a;min-width:135px}.intelligence-filters select,.intelligence-filters input{padding:9px;border:1px solid #cbd6e2;background:white;color:#182744}.intelligence-filters button,.intelligence-pagination button,.intelligence-article button,.intelligence-dialog button{padding:9px 13px;border:1px solid #cad4df;background:#fff;color:#163b60;cursor:pointer}.intelligence-filters a{align-self:center}.intelligence-articles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.intelligence-article{background:#fff;padding:22px;border:1px solid #dae3eb;border-top:3px solid #173b61;overflow-wrap:anywhere}.intelligence-article h2{font-size:19px;line-height:1.35;margin:12px 0}.intelligence-article p{line-height:1.65;color:#4d5f71}.intelligence-article a{color:#153f69;text-decoration:none}.intelligence-article footer{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}.intelligence-tags{display:flex;gap:7px;flex-wrap:wrap;margin:14px 0}.intelligence-tags span{font-size:11px;background:#eaf0f6;padding:5px 8px;color:#36536b}.intelligence-pagination{display:flex;align-items:center;justify-content:center;gap:20px;margin:25px 0}.intelligence-pagination button:disabled{opacity:.45;cursor:default}.intelligence-source-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px}.intelligence-source-grid article,.intelligence-brief,.intelligence-overview{padding:20px;background:#fff;border:1px solid #dbe3eb;margin-bottom:15px}.intelligence-error{color:#a82432}.intelligence-brief article{padding:15px 0;border-bottom:1px solid #e0e6ed}.intelligence-dialog{width:min(850px,90vw);max-height:85vh;border:1px solid #c6d4e0;padding:25px;overflow:auto;line-height:1.65}.intelligence-dialog::backdrop{background:#15243c99}.intelligence-dialog details{border-top:1px solid #dce4ea;padding:12px 0}.intelligence-note{padding:16px;background:#edf2f7}#intelligence-status{font-size:13px;color:#506277}.news-topic-tabs{overflow-x:auto;display:flex;flex-wrap:nowrap;gap:6px}.news-topic-tabs button{white-space:nowrap}#intelligence-update{padding:12px;background:#e5f0f8}@media(max-width:800px){.intelligence-articles,.intelligence-source-grid{grid-template-columns:1fr}.intelligence-filters label{flex:1;min-width:140px}.intelligence-pagination{gap:10px;font-size:12px}.intelligence-dialog{padding:16px}.news-surface{padding:16px}}
