@@ -604,7 +604,7 @@ def _coal_dashboard_payload(
             {"label": "Latest production", "value": latest.get("production_mt"), "unit": "MT", "detail": latest.get("period", "—")},
             {"label": "Latest dispatch", "value": latest_dispatch.get("dispatch_mt"), "unit": "MT", "detail": latest_dispatch.get("period", "—")},
             {"label": "Periods returned", "value": len(frame), "unit": "", "detail": f"{start} to {end}"},
-            {"label": "Latest official month", "value": None, "display": quality.get("coal", {}).get("latest", "—"), "unit": "", "detail": "Provisional bulletin"},
+            {"label": "Latest official month", "value": None, "display": str(coal_all.period.max()) if not coal_all.empty else "—", "unit": "", "detail": "Latest loaded Ministry bulletin"},
         ]
         if tab == "overview" and not mix_frame.empty:
             power_latest = mix_frame.dropna(subset=["coal_share_pct"]).iloc[-1]

@@ -2731,7 +2731,36 @@ async function setCoalDashboardTab(tab) {
   document.querySelectorAll("[data-coal-dashboard-tab]").forEach(button => {
     button.classList.toggle("active", button.dataset.coalDashboardTab === tab);
   });
+  if (tab === "news") return loadCoalNews();
   await loadCoalDashboard();
+}
+
+async function loadCoalNews() {
+  const container = document.getElementById("coal-dashboard-panels");
+  container.innerHTML = `<div class="coal-dashboard-loading">Loading coal production, imports, use and stock news from the last six months…</div>`;
+  try {
+    const response = await fetch(`/api/news?topic=all&q=coal&days=180&page=1&page_size=60&sort=newest`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || "Coal news is unavailable");
+    const rows = (payload.rows || []).filter(row => {
+      const text = `${row.title || ""} ${row.description || ""} ${(row.commodity_groups || []).join(" ")}`.toLowerCase();
+      return /(coal|coking|thermal|power station|stockpile|imports?|production|offtake|dispatch)/.test(text);
+    });
+    document.getElementById("coal-dashboard-availability").innerHTML =
+      `<div><strong>Coal intelligence window</strong><span>Last six months · ${rows.length} matching articles · source archive checked ${escapeHtml(payload.fetched_at ? new Date(payload.fetched_at).toLocaleString() : "not completed")}</span></div>` +
+      `<p>Coverage includes production, imports, power use, stockpiles, policy and logistics. Headlines are evidence links; they do not establish causality.</p>`;
+    document.getElementById("coal-dashboard-kpis").innerHTML = [
+      ["Matching articles", rows.length, "last 180 days"],
+      ["Headline groups", payload.event_count || 0, "deduplicated events"],
+      ["Publishers", (payload.providers || []).filter(item => Number(item.fetched || 0) > 0).length, "with recent records"],
+      ["Archive records", payload.archive_total || 0, "retained source history"]
+    ].map(item => `<article><span>${escapeHtml(item[0])}</span><strong>${formatNumber(item[1], 0)}</strong><p>${escapeHtml(item[2])}</p></article>`).join("");
+    const card = row => `<article class="coal-news-card"><div class="coal-news-meta"><span>${escapeHtml(row.source_name || "Source")}</span><span>${escapeHtml(row.published_at ? new Date(row.published_at).toLocaleDateString() : "Date unavailable")}</span></div><a href="${escapeAttr(row.link || "#")}" target="_blank" rel="noopener noreferrer"><h3>${escapeHtml(row.title || "Untitled coal item")}</h3></a><p>${escapeHtml(row.description || "Source description unavailable.")}</p><div class="coal-news-tags">${[...(row.commodity_groups || []), ...(row.countries || [])].slice(0, 5).map(tag => `<span>${escapeHtml(String(tag).replaceAll("_", " "))}</span>`).join("")}</div><small>${escapeHtml(row.evidence_level || "Metadata only")} · ${escapeHtml(row.content_type || "news")}</small></article>`;
+    container.innerHTML = `<article class="coal-dashboard-card coal-dashboard-card-wide coal-news-intro"><header><div><span>COAL NEWS DESK · SIX MONTHS</span><h3>Production, trade, use and stockpile intelligence</h3><p>Fresh source records are grouped by headline event where the archive can establish a match. Open the original source for the full report.</p></div><a class="coal-news-open-all" href="#" data-open-news>Open full intelligence desk ↗</a></header><div class="coal-news-grid">${rows.map(card).join("") || `<p class="coal-dashboard-empty">No matching coal records are currently available. Check Sources &amp; coverage in the main News workspace.</p>`}</div></article>`;
+    container.querySelector("[data-open-news]")?.addEventListener("click", event => { event.preventDefault(); activateMode("news"); });
+  } catch (error) {
+    container.innerHTML = `<div class="coal-dashboard-error">${escapeHtml(error.message)}</div>`;
+  }
 }
 
 function applyCoalRangePreset(preset) {
@@ -2751,8 +2780,9 @@ function applyCoalRangePreset(preset) {
 
 async function loadCoalDashboard() {
   const container = document.getElementById("coal-dashboard-panels");
-  const start = document.getElementById("coal-analysis-from").value || "2023-05";
-  const end = document.getElementById("coal-analysis-to").value || "2026-06";
+  const periodOptions = Array.from(document.getElementById("coal-analysis-to").options).map(option => option.value);
+  const start = document.getElementById("coal-analysis-from").value || periodOptions[0] || "2023-05";
+  const end = document.getElementById("coal-analysis-to").value || periodOptions[periodOptions.length - 1] || "2026-07";
   const frequency = document.getElementById("coal-analysis-frequency").value || "monthly";
   const focus = document.getElementById("coal-analysis-focus").value || "all";
   const comparison = document.getElementById("coal-analysis-comparison").value || "previous_period";

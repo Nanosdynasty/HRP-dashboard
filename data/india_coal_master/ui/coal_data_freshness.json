@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-31T12:19:37+00:00",
+  "generated_at": "2026-10-13T00:00:00+00:00",
   "policy": "Official observations only; missing periods are never interpolated and stale granular tables are labelled at their true coverage.",
   "datasets": [
     {
@@ -21,7 +21,7 @@
     {
       "dataset": "Coal production and dispatch \u2014 monthly",
       "file": "coal_monthly_official.csv",
-      "latest_period": "2026-06",
+      "latest_period": "2026-07",
       "status": "current",
       "release_status": "provisional",
       "source": "https://coal.gov.in/public-information/monthly-statistics-at-glance"
