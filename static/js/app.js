@@ -2739,7 +2739,7 @@ async function loadCoalNews() {
   const container = document.getElementById("coal-dashboard-panels");
   container.innerHTML = `<div class="coal-dashboard-loading">Loading coal production, imports, use and stock news from the last six months…</div>`;
   try {
-    const response = await fetch(`/api/news?topic=all&q=coal&days=180&page=1&page_size=60&sort=newest`);
+    const response = await fetch(`/api/coal/news?days=180&page=1&page_size=60&q=coal`);
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || "Coal news is unavailable");
     const rows = (payload.rows || []).filter(row => {

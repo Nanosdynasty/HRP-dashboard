@@ -5572,6 +5572,20 @@ async def market_news(article_ids: str = Query("", max_length=20000), topic: str
     return news_intelligence_manager.response(article_ids=article_ids, topic=topic, commodity_group=commodity_group, query=q, days=days, page=page, page_size=page_size, country=country, port=port, vessel=vessel, publisher=publisher, content_type=content_type, language=language, start=start, end=end, sort=sort)
 
 
+@app.get("/api/coal/news")
+async def coal_news(days: int = Query(180, ge=1, le=365), page: int = Query(1, ge=1), page_size: int = Query(60, ge=1, le=100), q: str = Query("coal", max_length=200)):
+    """Return the source-backed six-month coal intelligence slice."""
+    if not news_intelligence_manager._is_fresh():
+        await news_intelligence_manager.refresh()
+    payload = news_intelligence_manager.response(
+        query=q, days=days, page=page, page_size=page_size, sort="newest"
+    )
+    payload["workspace"] = "india_coal"
+    payload["coverage_window_days"] = days
+    payload["coverage_note"] = "Coal production, imports, power use, stockpiles, policy and logistics records from the source archive; headlines are evidence links, not causal conclusions."
+    return payload
+
+
 @app.get("/api/news/export.csv")
 async def export_news(snapshot_id: str):
     from intelligence_archive import export_csv
