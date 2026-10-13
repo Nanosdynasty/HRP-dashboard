@@ -3,6 +3,7 @@ services:
     name: hrp-dashboard
     runtime: docker
     plan: free
+    autoDeploy: true
     healthCheckPath: /api/health
     envVars:
       - key: XAI_API_KEY
