@@ -820,7 +820,7 @@ function formatMonthYear(value) {
   const yearMonth = raw.match(/^(\d{4})-(\d{1,2})(?:-|$)/);
   const date = yearMonth ? new Date(Date.UTC(Number(yearMonth[1]), Number(yearMonth[2]) - 1, 1)) : new Date(value);
   if (Number.isNaN(date.getTime())) return raw;
-  return date.toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" }).replace(" ", "-");
+  return date.toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" });
 }
 
 function setRiverView(view) {
@@ -2723,7 +2723,19 @@ function syncCoalPeriodOptions() {
 }
 
 function formatCoalPeriod(period) {
-  return formatMonthYear(period);
+  if (document.getElementById("coal-analysis-frequency")?.value === "financial_year" && /^\d{4}-\d{2}$/.test(String(period))) return `FY ${period}`;
+  return formatCoalDateLabel(period);
+}
+
+// Format presentation labels only; API period keys stay unchanged.
+function formatCoalDateLabel(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  return String(value).replace(/\b(\d{4})-(\d{2})(?:-(\d{2}))?\b/g, (raw, year, month, day) => {
+    const m = Number(month);
+    if (m < 1 || m > 12) return raw;
+    const name = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1];
+    return `${day ? Number(day) + " " : ""}${name} ${year.slice(-2)}`;
+  });
 }
 
 async function setCoalDashboardTab(tab) {
@@ -2935,7 +2947,8 @@ function formatDashboardCell(value, column) {
   if (value === null || value === undefined || value === "") return "<span class=\"coal-null\">—</span>";
   if (typeof value === "number") return escapeHtml(formatNumber(value, column.includes("pct") ? 1 : 2));
   if (column.includes("url")) return `<a href="${escapeAttr(value)}" target="_blank" rel="noopener">Source</a>`;
-  return escapeHtml(String(value));
+  if (column === "financial_year") return escapeHtml(`FY ${value}`);
+  return escapeHtml(formatCoalDateLabel(value));
 }
 
 function renderDynamicCoalChart(id, rows, chart) {

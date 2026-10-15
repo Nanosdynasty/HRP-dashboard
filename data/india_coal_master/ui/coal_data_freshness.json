@@ -1,12 +1,20 @@
 {
-  "generated_at": "2026-10-13T00:00:00+00:00",
+  "generated_at": "2026-10-15T07:01:21+00:00",
   "policy": "Official observations only; missing periods are never interpolated and stale granular tables are labelled at their true coverage.",
   "datasets": [
     {
       "dataset": "National coal imports \u2014 monthly",
       "file": "coal_imports_monthly.csv",
-      "latest_period": "2026-04",
-      "status": "current",
+      "latest_period": "2026-03",
+      "status": "latest comparable monthly release",
+      "release_status": "provisional",
+      "source": "https://coal.gov.in/sites/default/files/2025-09/29-06-2026a-qety.pdf"
+    },
+    {
+      "dataset": "National coal imports \u2014 FY-to-date",
+      "file": "coal_imports_monthly.csv",
+      "latest_period": "2026-06",
+      "status": "Apr\u2013Jun FY2026-27 cumulative; not a June monthly total",
       "release_status": "provisional",
       "source": "https://coal.gov.in/major-statistics/production-and-supplies"
     },
@@ -22,17 +30,18 @@
       "dataset": "Coal production and dispatch \u2014 monthly",
       "file": "coal_monthly_official.csv",
       "latest_period": "2026-07",
-      "status": "current",
+      "status": "latest loaded bulletin",
       "release_status": "provisional",
       "source": "https://coal.gov.in/public-information/monthly-statistics-at-glance"
     },
     {
       "dataset": "Electricity generation \u2014 monthly",
-      "file": "india_power_mix_monthly.csv",
-      "latest_period": "2026-06",
-      "status": "current",
-      "release_status": "official reported",
-      "source": "https://cea.nic.in/renewable-generation-report/?lang=en"
+      "file": "india_power_generation_monthly.csv",
+      "latest_period": "2026-09",
+      "status": "NPP conventional series",
+      "release_status": "official reported/tentative by period",
+      "source": "https://npp.gov.in/publishedReports",
+      "limitation": "All-source CEA renewable mix has separate coverage; tentative months remain labelled."
     },
     {
       "dataset": "Coal imports by reported country",
@@ -71,6 +80,20 @@
       "status": "historical only",
       "release_status": "final",
       "limitation": "Not used for current-period claims."
+    },
+    {
+      "dataset": "NPP daily station fuel and stock",
+      "file": "npp_daily_coal_national.csv",
+      "latest_period": "2026-10-13",
+      "status": "daily reported",
+      "source": "https://npp.gov.in/dailyCoalReports"
+    },
+    {
+      "dataset": "NPP corrected daily generation",
+      "file": "npp_daily_generation_dgr1.csv",
+      "latest_period": "2026-10-12",
+      "status": "daily reported",
+      "source": "https://npp.gov.in/dgrReports"
     }
   ]
 }

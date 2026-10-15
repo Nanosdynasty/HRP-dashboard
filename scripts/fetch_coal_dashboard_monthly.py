@@ -25,7 +25,11 @@ UI = ROOT / "data" / "india_coal_master" / "ui"
 COAL_ARCHIVE = "https://coal.gov.in/public-information/monthly-statistics-at-glance"
 NPP_BASE = "https://npp.gov.in/public-reports/cea/monthly/generation/18_col_act"
 START_PERIOD = pd.Period("2023-05", freq="M")
-END_PERIOD = pd.Period("2026-06", freq="M")
+# Keep the requested horizon explicit so a refresh cannot silently stop at an
+# old release.  The NPP monthly reports currently extend through September
+# 2026; missing releases are retained in the quality manifest rather than
+# fabricated.
+END_PERIOD = pd.Period("2026-09", freq="M")
 
 
 def get(client: httpx.Client, url: str) -> bytes:
@@ -178,6 +182,12 @@ def npp_url(period: pd.Period, report: int) -> str:
     return f"{NPP_BASE}//{period.year}/{mon}/18_col_act-{report}_{period.year}-{mon}.xls"
 
 
+def npp_tentative_url(period: pd.Period, report: int) -> str:
+    mon = period.strftime("%b").upper()
+    base = NPP_BASE.replace("18_col_act", "18_col_ten")
+    return f"{base}//{period.year}/{mon}/18_col_ten-{report}_{period.year}-{mon}.xls"
+
+
 def numeric(value) -> float | None:
     try:
         result = float(value)
@@ -186,19 +196,19 @@ def numeric(value) -> float | None:
     return result if pd.notna(result) else None
 
 
-def parse_npp(period: pd.Period, overview_bytes: bytes, fuel_bytes: bytes) -> dict:
+def parse_npp(period: pd.Period, overview_bytes: bytes, fuel_bytes: bytes, tentative: bool = False) -> dict:
     overview = pd.read_excel(io.BytesIO(overview_bytes), header=None)
     fuel = pd.read_excel(io.BytesIO(fuel_bytes), header=None)
     header_row = next(
-        (overview.iloc[index] for index in range(min(12, len(overview)))
-         if overview.iloc[index].astype(str).str.strip().str.upper().eq("ACTUAL").any()),
+        (overview.iloc[index] for index in range(min(14, len(overview)))
+         if overview.iloc[index].astype(str).str.strip().str.upper().str.contains("ACTUAL", regex=False).any()),
         None,
     )
     if header_row is None:
         raise ValueError(f"NPP ACTUAL column not found for {period}")
     actual_column = next(
         index for index, value in enumerate(header_row)
-        if str(value).strip().upper() == "ACTUAL"
+        if "ACTUAL" in str(value).strip().upper()
     )
     conventional: dict[str, float] = {}
     for _, row in overview.iterrows():
@@ -217,7 +227,7 @@ def parse_npp(period: pd.Period, overview_bytes: bytes, fuel_bytes: bytes) -> di
     total = conventional.get("total")
     coal = fuels.get("TOTAL COAL BASED")
     return {
-        "period": str(period), "status": "final", "coal_generation_gwh": coal,
+        "period": str(period), "status": "tentative" if tentative else "final", "coal_generation_gwh": coal,
         "lignite_generation_gwh": fuels.get("TOTAL LIGNITE BASED"),
         "thermal_generation_gwh": conventional.get("thermal"),
         "nuclear_generation_gwh": conventional.get("nuclear"),
@@ -225,7 +235,7 @@ def parse_npp(period: pd.Period, overview_bytes: bytes, fuel_bytes: bytes) -> di
         "bhutan_import_gwh": conventional.get("bhutan imp"),
         "conventional_generation_gwh": total,
         "coal_share_conventional_pct": coal / total * 100 if coal and total else None,
-        "npp_source_url": npp_url(period, 1), "npp_fuel_source_url": npp_url(period, 11),
+        "npp_source_url": npp_tentative_url(period, 1) if tentative else npp_url(period, 1), "npp_fuel_source_url": npp_tentative_url(period, 11) if tentative else npp_url(period, 11),
     }
 
 
@@ -234,7 +244,14 @@ def main() -> None:
     UI.mkdir(parents=True, exist_ok=True)
     expected = list(pd.period_range(START_PERIOD, END_PERIOD, freq="M"))
     with httpx.Client(headers={"User-Agent": "HRP-Dashboard/1.0 official-data-research"}) as client:
-        links = archive_links(client)
+        try:
+            links = archive_links(client)
+            archive_error = None
+        except Exception as exc:
+            # The NPP reports are an independent source.  Preserve the last
+            # validated Ministry snapshot if its archive is unavailable.
+            links = {}
+            archive_error = str(exc)
         coal_rows, coal_errors = [], []
         for period in expected:
             url = links.get(period)
@@ -245,17 +262,31 @@ def main() -> None:
                 coal_rows.append(parse_coal_pdf(period, url, get(client, url)))
             except Exception as exc:
                 coal_errors.append({"period": str(period), "error": str(exc)})
+        if archive_error:
+            coal_errors.insert(0, {"period": "archive", "error": archive_error})
 
         power_rows, power_errors = [], []
         for period in expected:
             try:
-                power_rows.append(parse_npp(period, get(client, npp_url(period, 1)), get(client, npp_url(period, 11))))
+                try:
+                    power_rows.append(parse_npp(period, get(client, npp_url(period, 1)), get(client, npp_url(period, 11))))
+                except Exception:
+                    # NPP publishes a tentative monthly report before the
+                    # actual report. Keep it explicitly provisional.
+                    power_rows.append(parse_npp(period, get(client, npp_tentative_url(period, 1)), get(client, npp_tentative_url(period, 11)), tentative=True))
             except Exception as exc:
                 power_errors.append({"period": str(period), "error": str(exc)})
 
-    coal = pd.DataFrame(coal_rows).sort_values("period")
+    coal = pd.DataFrame(coal_rows)
+    existing_coal_path = CANONICAL / "coal_monthly_official.csv"
+    if existing_coal_path.exists():
+        existing_coal = pd.read_csv(existing_coal_path)
+        coal = pd.concat([existing_coal, coal], ignore_index=True)
+    if not coal.empty:
+        coal = coal.sort_values("period").drop_duplicates("period", keep="last")
     power = pd.DataFrame(power_rows).sort_values("period")
-    coal.to_csv(CANONICAL / "coal_monthly_official.csv", index=False, encoding="utf-8-sig")
+    if not coal.empty:
+        coal.to_csv(existing_coal_path, index=False, encoding="utf-8-sig")
     power.to_csv(CANONICAL / "india_power_generation_monthly.csv", index=False, encoding="utf-8-sig")
     manifest = {
         "generated_at": datetime.now(timezone.utc).isoformat(),

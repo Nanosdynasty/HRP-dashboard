@@ -79,6 +79,8 @@ def parse_fy_2025_26_monthly(text: str) -> list[dict]:
 def parse_latest_ministry_imports(html: str) -> dict:
     plain = re.sub(r"<[^>]+>", " ", html)
     plain = re.sub(r"\s+", " ", plain)
+    if not re.search(r"Import\s+upto\s+Apr-26\s*-\s*June?-26", plain, re.IGNORECASE):
+        raise ValueError("Current Ministry import reporting period changed; inspect before publishing")
     patterns = {
         "coking_coal_mt": r"Coking Coal\s+57\.16\s+56\.05\s+58\.81\s+57\.58\s+66\.33\s+(\d+(?:\.\d+)?)",
         "non_coking_coal_mt": r"Non-Coking Coal\s+151\.77\s+181\.62\s+205\.72\s+186\.05\s+180\.04\s+(\d+(?:\.\d+)?)",
@@ -97,21 +99,23 @@ def refresh_imports(client: httpx.Client) -> tuple[pd.DataFrame, pd.DataFrame]:
     monthly_path = CANONICAL / "coal_imports_monthly.csv"
     monthly = pd.read_csv(monthly_path)
     monthly = monthly.loc[monthly["period"].astype(str) <= "2025-03"].copy()
+    monthly["reporting_basis"] = "monthly"
     if "source_url" not in monthly:
         monthly["source_url"] = "https://coal.gov.in/major-statistics/coal-statistics"
-    monthly = pd.concat(
-        [monthly, pd.DataFrame(parse_fy_2025_26_monthly(fetch_pdf_text(client, QUARTERLY_PDF)))],
-        ignore_index=True,
-    )
-    april = parse_latest_ministry_imports(fetch_text(client, MINISTRY_PAGE))
-    april.update({
-        "period": "2026-04",
+    quarterly_rows = parse_fy_2025_26_monthly(fetch_pdf_text(client, QUARTERLY_PDF))
+    for row in quarterly_rows:
+        row["reporting_basis"] = "monthly"
+    monthly = pd.concat([monthly, pd.DataFrame(quarterly_rows)], ignore_index=True)
+    ytd = parse_latest_ministry_imports(fetch_text(client, MINISTRY_PAGE))
+    ytd.update({
+        "period": "2026-06",
         "financial_year": "2026-27",
         "coke_products_mt": None,
         "status": "provisional",
         "source_url": MINISTRY_PAGE,
+        "reporting_basis": "financial_year_to_date",
     })
-    monthly = pd.concat([monthly, pd.DataFrame([april])], ignore_index=True)
+    monthly = pd.concat([monthly, pd.DataFrame([ytd])], ignore_index=True)
     monthly = monthly.sort_values("period").drop_duplicates("period", keep="last")
     monthly.to_csv(monthly_path, index=False)
 
@@ -149,17 +153,28 @@ def refresh_imports(client: httpx.Client) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def write_freshness(monthly: pd.DataFrame, annual: pd.DataFrame) -> None:
+    monthly_only = monthly.loc[monthly.reporting_basis == "monthly"]
+    cumulative = monthly.loc[monthly.reporting_basis == "financial_year_to_date"]
+    production = pd.read_csv(CANONICAL / "coal_monthly_official.csv")
+    generation = pd.read_csv(CANONICAL / "india_power_generation_monthly.csv")
+    npp_fuel = pd.read_csv(CANONICAL / "npp_daily_coal_national.csv") if (CANONICAL / "npp_daily_coal_national.csv").exists() else pd.DataFrame()
+    npp_dgr = pd.read_csv(CANONICAL / "npp_daily_generation_dgr1.csv") if (CANONICAL / "npp_daily_generation_dgr1.csv").exists() else pd.DataFrame()
     datasets = [
-        {"dataset": "National coal imports — monthly", "file": "coal_imports_monthly.csv", "latest_period": str(monthly.period.max()), "status": "current", "release_status": "provisional", "source": MINISTRY_PAGE},
+        {"dataset": "National coal imports — monthly", "file": "coal_imports_monthly.csv", "latest_period": str(monthly_only.period.max()), "status": "latest comparable monthly release", "release_status": "provisional", "source": QUARTERLY_PDF},
+        {"dataset": "National coal imports — FY-to-date", "file": "coal_imports_monthly.csv", "latest_period": str(cumulative.period.max()) if not cumulative.empty else None, "status": "Apr–Jun FY2026-27 cumulative; not a June monthly total", "release_status": "provisional", "source": MINISTRY_PAGE},
         {"dataset": "National coal imports — annual", "file": "coal_india_annual.csv", "latest_period": str(annual.period.max()), "status": "current", "release_status": "provisional", "source": MINISTRY_PAGE},
-        {"dataset": "Coal production and dispatch — monthly", "file": "coal_monthly_official.csv", "latest_period": "2026-06", "status": "current", "release_status": "provisional", "source": "https://coal.gov.in/public-information/monthly-statistics-at-glance"},
-        {"dataset": "Electricity generation — monthly", "file": "india_power_mix_monthly.csv", "latest_period": "2026-06", "status": "current", "release_status": "official reported", "source": "https://cea.nic.in/renewable-generation-report/?lang=en"},
+        {"dataset": "Coal production and dispatch — monthly", "file": "coal_monthly_official.csv", "latest_period": str(production.period.max()), "status": "latest loaded bulletin", "release_status": "provisional", "source": "https://coal.gov.in/public-information/monthly-statistics-at-glance"},
+        {"dataset": "Electricity generation — monthly", "file": "india_power_generation_monthly.csv", "latest_period": str(generation.period.max()), "status": "NPP conventional series", "release_status": "official reported/tentative by period", "source": "https://npp.gov.in/publishedReports", "limitation": "All-source CEA renewable mix has separate coverage; tentative months remain labelled."},
         {"dataset": "Coal imports by reported country", "file": "coal_imports_by_origin.csv", "latest_period": "2024-25", "status": "latest granular official release", "release_status": "final", "limitation": "Customs reporting country is not treated as physical mine origin."},
         {"dataset": "Coal imports by Indian port", "file": "coal_imports_by_port.csv", "latest_period": "2024-25", "status": "latest granular official release", "release_status": "final"},
         {"dataset": "Coal production by coal type — monthly", "file": "coal_production_monthly.csv", "latest_period": "2024-12", "status": "historical only", "release_status": "final", "limitation": "No later compatible all-India coking/non-coking monthly series has been loaded."},
         {"dataset": "Coal off-take by consuming sector", "file": "coal_offtake_by_sector.csv", "latest_period": "2024-25", "status": "latest granular official release", "release_status": "final"},
         {"dataset": "Plant-level coking coal consumption", "file": "steel_plant_coking_coal.csv", "latest_period": "2018-19", "status": "historical only", "release_status": "final", "limitation": "Not used for current-period claims."},
     ]
+    if not npp_fuel.empty:
+        datasets.append({"dataset": "NPP daily station fuel and stock", "file": "npp_daily_coal_national.csv", "latest_period": str(npp_fuel.date.max()), "status": "daily reported", "source": "https://npp.gov.in/dailyCoalReports"})
+    if not npp_dgr.empty:
+        datasets.append({"dataset": "NPP corrected daily generation", "file": "npp_daily_generation_dgr1.csv", "latest_period": str(npp_dgr.date.max()), "status": "daily reported", "source": "https://npp.gov.in/dgrReports"})
     QUALITY.write_text(json.dumps({
         "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "policy": "Official observations only; missing periods are never interpolated and stale granular tables are labelled at their true coverage.",
@@ -173,7 +188,8 @@ def main() -> None:
     write_freshness(monthly, annual)
     print(json.dumps({
         "monthly_rows": len(monthly),
-        "monthly_latest": str(monthly.period.max()),
+        "monthly_latest": str(monthly.loc[monthly.reporting_basis == "monthly", "period"].max()),
+        "cumulative_ytd_latest": str(monthly.loc[monthly.reporting_basis == "financial_year_to_date", "period"].max()),
         "annual_latest": str(annual.period.max()),
         "fy_2025_26_total_mt": float(monthly.loc[monthly.financial_year == "2025-26", "total_coal_mt"].sum()),
     }, indent=2))

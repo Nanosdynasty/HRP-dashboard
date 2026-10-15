@@ -1,0 +1,91 @@
+/* India Coal: light analytical workspace, independent of the legacy panel skin. */
+body:has(#coal-data-surface:not([hidden])) .app-shell {grid-template-columns:1fr}
+body:has(#coal-data-surface:not([hidden])) .control-panel {display:none}
+#coal-workspace-header {display:none!important}
+#coal-data-surface {position:fixed;inset:0;z-index:600;width:auto;overflow:auto;padding:0 28px 30px;background:#f0f7fc;color:#10264f;font:14px/1.45 Arial,sans-serif}
+#coal-data-surface[hidden] {display:none}
+#coal-data-surface * {box-sizing:border-box}
+#coal-data-surface [hidden] {display:none!important}
+.cwx-top {display:flex;align-items:center;gap:24px;min-height:68px;margin:0 -28px;padding:12px 28px;background:#fff;border-bottom:1px solid #dce7f1}
+.cwx-top img {width:160px;height:42px;object-fit:contain}
+.cwx-nav {display:flex;align-self:stretch;gap:8px;flex:1;overflow:auto}
+#coal-data-surface button,.cwx-export a {font:inherit;cursor:pointer;background:#fff;color:#163765;border:1px solid #d2e1ef;border-radius:5px;padding:8px 12px;text-decoration:none}
+.cwx-nav button {border:0!important;border-radius:0!important;white-space:nowrap}
+.cwx-nav button.active {color:#005fc5!important;border-bottom:3px solid #1764d2!important}
+#coal-data-surface button:hover,.cwx-export a:hover {background:#eaf3fc}
+#coal-data-surface :focus-visible {outline:3px solid #2877d4;outline-offset:3px}
+.cwx-heading {display:flex;justify-content:space-between;align-items:center;gap:16px;padding:20px 0 12px}
+.cwx-heading h1 {font-size:42px;line-height:1.15;letter-spacing:-1px;margin:0 0 6px;font-weight:600}
+.cwx-heading p {margin:0;color:#5d7192}
+.cwx-tools {display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.cwx-filters {display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin:0 0 12px}
+.cwx-filters label {display:grid;gap:3px;font-size:11px;color:#52698b}
+.cwx-filters select {height:34px;min-width:115px;border:1px solid #d2e1ef;border-radius:4px;padding:4px 10px;color:#17385f;background:white;font:13px Arial}
+.cwx-filters #coal-analysis-focus {max-width:230px}
+.cwx-ranges {display:flex;gap:4px;margin-left:auto}
+.cwx-ranges button.active {background:#daeafd!important}
+.cwx-export {display:flex;gap:6px}
+.cwx-coverage {font-size:11px;color:#5a708e;margin-bottom:12px}
+.cwx-coverage p {margin:3px 0}
+.cwx-kpis {display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px;margin-bottom:12px}
+.cwx-kpis article {border:1px solid #dce7f1;border-radius:5px;background:#fff;padding:14px 16px;min-width:0}
+.cwx-kpis span {display:block;font-size:12px;font-weight:600}
+.cwx-kpis strong {display:block;font-size:26px;line-height:1.3;margin:9px 0 4px;font-weight:600;letter-spacing:-.6px}
+.cwx-kpis strong small {font-size:14px}
+.cwx-kpis p,.cwx-kpis b {font-size:11px;color:#52698b;margin:4px 0;font-weight:400}
+.cwx-panels {display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}
+.cwx-card {grid-column:span 3;background:white;border:1px solid #dce7f1;border-radius:5px;padding:14px;min-width:0}
+.cwx-card {min-height:300px;resize:both;overflow:auto;min-width:320px;min-height:260px;width:100%;max-width:none;max-height:900px;justify-self:stretch}
+.cwx-card-size {font-size:11px!important;padding:5px 8px!important;white-space:nowrap}
+.cwx-card-wide {grid-column:span 4;min-height:340px}
+.cwx-card-large {grid-column:1/-1;min-height:390px}
+.cwx-explain {color:#385b80!important;max-width:70ch}
+.cwx-list-view .cwx-card {grid-column:1/-1;min-height:0;display:grid;grid-template-columns:minmax(220px,1fr) minmax(420px,2fr);gap:18px;align-items:start}
+.cwx-list-view .cwx-card header {display:block}
+.cwx-list-view .cwx-card .cwx-chart {min-height:250px}
+.cwx-card.major {grid-column:span 3}
+.cwx-card.minor {grid-column:span 2}
+.cwx-card.wide {grid-column:1/-1}
+.cwx-card header {display:flex;justify-content:space-between;gap:10px;align-items:start}
+.cwx-card-tools {display:flex;gap:6px;align-items:center;flex:0 0 auto}
+.cwx-chart-style {font-size:11px!important;padding:5px 7px!important;min-width:92px}
+.cwx-card h3 {font-size:16px;line-height:1.25;margin:0 0 4px;font-weight:600}
+.cwx-card p {font-size:11px;color:#61738e;margin:4px 0 8px}
+.cwx-card a {color:#1460b9}
+.cwx-chart svg {width:100%;display:block;min-width:340px}
+.cwx-chart {overflow-x:auto}
+.cwx-chart text {font:11px Arial;fill:#657992}
+.cwx-legend {display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin:5px 0}
+.cwx-legend button {font-size:11px!important;border:0!important;padding:4px!important}
+.cwx-legend i {display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
+.cwx-legend button[aria-pressed=false] {opacity:.45;text-decoration:line-through}
+.cwx-tip {min-height:23px;text-align:center;font-size:11px;color:#294e78;background:#f4f9fd;border-radius:3px;padding:4px}
+.cwx-table-wrap {max-height:340px;overflow:auto}
+.cwx-table-wrap table {width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}
+.cwx-table-wrap td,.cwx-table-wrap th {text-align:left;padding:9px;border-bottom:1px solid #e2ebf4}
+.cwx-table-wrap th {position:sticky;top:0;background:#f3f8fc;font-weight:600}
+.cwx-table-search input {border:1px solid #d2e1ef;border-radius:4px;padding:7px}
+.cwx-disclosure {grid-column:1/-1;background:#fff;border:1px solid #dce7f1;border-radius:5px;padding:12px;font-size:12px}
+.cwx-disclosure summary {cursor:pointer;font-weight:600}
+.cwx-disclosure .cwx-card {border:0;padding:10px 0}
+.cwx-source-grid {display:flex;flex-wrap:wrap;gap:12px}
+.cwx-compare-options {display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;margin:12px 0}
+.cwx-compare-options label {display:flex;align-items:center;flex-wrap:wrap;gap:7px;padding:9px;border:1px solid #dce7f1;border-radius:5px;font-size:12px;cursor:pointer}
+.cwx-compare-options small {color:#637894;margin-left:auto}
+.cwx-compare-options input {accent-color:#1764d2}
+.cwx-message {grid-column:1/-1;padding:28px;background:#fff;border:1px solid #dce7f1;border-radius:5px}
+.cwx-error {color:#a12c36;border-color:#e9b7bf}
+.cwx-news {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
+.cwx-news article {min-width:0;padding-right:12px;border-right:1px solid #e0e9f2}
+.cwx-news h3 {font-size:14px;margin:8px 0;font-weight:500}
+.cwx-news small {font-size:11px;color:#627795}
+.cwx-news article p {line-height:1.5}
+.cwx-news-tag {display:inline-block;background:#e7f2ff;color:#0860bb;padding:3px 7px;border-radius:4px;font-size:10px;margin:5px 4px 0 0}
+.cwx-footer {color:#627795;font-size:11px;margin-top:16px}
+.cwx-dialog {width:min(920px,95vw);max-height:90vh;overflow:auto;border:1px solid #d2e1ef;border-radius:8px;padding:24px;color:#17385f;background:#f6faff}
+.cwx-dialog::backdrop {background:#10264f70}
+.cwx-dialog .cwx-tools {margin-bottom:12px}
+.cwx-dialog .filter-section,.cwx-dialog .coal-analysis-panel {border:0;background:white;border-radius:5px;padding:12px;box-shadow:none}
+.cwx-dialog .coal-analysis-grid {display:none}
+@media(max-width:1100px){.cwx-top{gap:12px}.cwx-top img{width:120px}.cwx-kpis{grid-template-columns:repeat(3,1fr)}.cwx-heading h1{font-size:34px}.cwx-ranges{margin-left:0}}
+@media(max-width:700px){#coal-data-surface{padding:0 12px 20px}.cwx-top{margin:0 -12px;padding:10px 12px;flex-wrap:wrap}.cwx-nav{order:3;width:100%;flex-basis:100%;min-height:40px}.cwx-heading{align-items:start;flex-direction:column}.cwx-kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.cwx-kpis strong{font-size:22px}.cwx-card,.cwx-card.major,.cwx-card.minor{grid-column:1/-1}.cwx-news{grid-template-columns:1fr 1fr}.cwx-filters label{flex:1}.cwx-filters select{width:100%;min-width:100px}.cwx-card header{flex-wrap:wrap}}

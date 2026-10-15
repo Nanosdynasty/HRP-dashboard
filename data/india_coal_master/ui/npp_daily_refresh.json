@@ -1,0 +1,168 @@
+{
+  "retrieved_at": "2026-10-15T06:48:12.730920+00:00",
+  "fuel_added": 0,
+  "generation_rows_added": 0,
+  "failures": [],
+  "sources": [
+    {
+      "date": "2026-09-28",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/28-09-2026/dailyCoal1-2026-09-28.xls"
+    },
+    {
+      "date": "2026-09-29",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/29-09-2026/dailyCoal1-2026-09-29.xls"
+    },
+    {
+      "date": "2026-09-30",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/30-09-2026/dailyCoal1-2026-09-30.xls"
+    },
+    {
+      "date": "2026-10-01",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/01-10-2026/dailyCoal1-2026-10-01.xls"
+    },
+    {
+      "date": "2026-10-02",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/02-10-2026/dailyCoal1-2026-10-02.xls"
+    },
+    {
+      "date": "2026-10-03",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/03-10-2026/dailyCoal1-2026-10-03.xls"
+    },
+    {
+      "date": "2026-10-04",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/04-10-2026/dailyCoal1-2026-10-04.xls"
+    },
+    {
+      "date": "2026-10-05",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/05-10-2026/dailyCoal1-2026-10-05.xls"
+    },
+    {
+      "date": "2026-10-06",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/06-10-2026/dailyCoal1-2026-10-06.xls"
+    },
+    {
+      "date": "2026-10-07",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/07-10-2026/dailyCoal1-2026-10-07.xls"
+    },
+    {
+      "date": "2026-10-08",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/08-10-2026/dailyCoal1-2026-10-08.xls"
+    },
+    {
+      "date": "2026-10-09",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/09-10-2026/dailyCoal1-2026-10-09.xls"
+    },
+    {
+      "date": "2026-10-10",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/10-10-2026/dailyCoal1-2026-10-10.xls"
+    },
+    {
+      "date": "2026-10-11",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/11-10-2026/dailyCoal1-2026-10-11.xls"
+    },
+    {
+      "date": "2026-10-12",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/12-10-2026/dailyCoal1-2026-10-12.xls"
+    },
+    {
+      "date": "2026-10-13",
+      "dataset": "fuel",
+      "url": "https://npp.gov.in/public-reports/cea/daily/fuel/13-10-2026/dailyCoal1-2026-10-13.xls"
+    },
+    {
+      "date": "2026-09-27",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/27-09-2026/dgr1-2026-09-27.xls"
+    },
+    {
+      "date": "2026-09-28",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/28-09-2026/dgr1-2026-09-28.xls"
+    },
+    {
+      "date": "2026-09-29",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/29-09-2026/dgr1-2026-09-29.xls"
+    },
+    {
+      "date": "2026-09-30",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/30-09-2026/dgr1-2026-09-30.xls"
+    },
+    {
+      "date": "2026-10-01",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/01-10-2026/dgr1-2026-10-01.xls"
+    },
+    {
+      "date": "2026-10-02",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/02-10-2026/dgr1-2026-10-02.xls"
+    },
+    {
+      "date": "2026-10-03",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/03-10-2026/dgr1-2026-10-03.xls"
+    },
+    {
+      "date": "2026-10-04",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/04-10-2026/dgr1-2026-10-04.xls"
+    },
+    {
+      "date": "2026-10-05",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/05-10-2026/dgr1-2026-10-05.xls"
+    },
+    {
+      "date": "2026-10-06",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/06-10-2026/dgr1-2026-10-06.pdf"
+    },
+    {
+      "date": "2026-10-07",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/07-10-2026/dgr1-2026-10-07.pdf"
+    },
+    {
+      "date": "2026-10-08",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/08-10-2026/dgr1-2026-10-08.pdf"
+    },
+    {
+      "date": "2026-10-09",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/09-10-2026/dgr1-2026-10-09.pdf"
+    },
+    {
+      "date": "2026-10-10",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/10-10-2026/dgr1-2026-10-10.pdf"
+    },
+    {
+      "date": "2026-10-11",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/11-10-2026/dgr1-2026-10-11.pdf"
+    },
+    {
+      "date": "2026-10-12",
+      "dataset": "generation",
+      "url": "https://npp.gov.in/public-reports/cea/daily/dgr/12-10-2026/dgr1-2026-10-12.pdf"
+    }
+  ]
+}

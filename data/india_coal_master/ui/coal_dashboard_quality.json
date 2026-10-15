@@ -1,13 +1,182 @@
 {
-  "generated_at": "2026-07-31T11:46:20.979103+00:00",
+  "generated_at": "2026-10-14T06:10:27.191114+00:00",
   "requested_range": [
     "2023-05",
-    "2026-06"
+    "2026-09"
   ],
   "coal": {
-    "rows": 38,
-    "latest": "2026-06",
-    "missing_or_failed": [],
+    "rows": 39,
+    "latest": "2026-07",
+    "missing_or_failed": [
+      {
+        "period": "archive",
+        "error": "Official source unavailable: https://coal.gov.in/public-information/monthly-statistics-at-glance?page=0"
+      },
+      {
+        "period": "2023-05",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2023-06",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2023-07",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2023-08",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2023-09",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2023-10",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2023-11",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2023-12",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2024-01",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2024-02",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2024-03",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2024-04",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2024-05",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2024-06",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2024-07",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2024-08",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2024-09",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2024-10",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2024-11",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2024-12",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2025-01",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2025-02",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2025-03",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2025-04",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2025-05",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2025-06",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2025-07",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2025-08",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2025-09",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2025-10",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2025-11",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2025-12",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2026-01",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2026-02",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2026-03",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2026-04",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2026-05",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2026-06",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2026-07",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2026-08",
+        "error": "archive link not found"
+      },
+      {
+        "period": "2026-09",
+        "error": "archive link not found"
+      }
+    ],
     "nulls": {
       "period": 0,
       "status": 0,
@@ -23,8 +192,8 @@
     }
   },
   "power": {
-    "rows": 38,
-    "latest": "2026-06",
+    "rows": 41,
+    "latest": "2026-09",
     "missing_or_failed": [],
     "nulls": {
       "period": 0,

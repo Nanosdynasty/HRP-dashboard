@@ -40,6 +40,7 @@ from river_levels import RiverLevelManager, SOURCE_CATALOG, export_rows_csv, exp
 from data_hub import create_data_hub_router
 from news_intelligence import NewsIntelligenceManager
 from india_source_monitor import IndiaSourceMonitor
+from coal_comparison import CATALOG as COAL_COMPARE_CATALOG, _monthly as coal_metric_monthly, metric_catalog as coal_metric_catalog, compare as compare_coal_metrics
 
 log = logging.getLogger("ais")
 logging.basicConfig(level=logging.INFO)
@@ -437,6 +438,17 @@ def _filter_months(frame: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     return frame.loc[(periods >= start) & (periods <= end)].copy()
 
 
+def _filter_coal_financial_years(frame: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    """Select annual observations whose reporting year overlaps the requested months."""
+    if frame.empty or "period" not in frame:
+        return frame.copy()
+    def fiscal(month: str) -> str:
+        year, number = map(int, month.split("-"))
+        year -= number < 4
+        return f"{year}-{str(year + 1)[-2:]}"
+    return _filter_months(frame, fiscal(start), fiscal(end))
+
+
 def _aggregate_dashboard(frame: pd.DataFrame, frequency: str, flow_columns: List[str]) -> pd.DataFrame:
     if frame.empty or frequency == "monthly":
         return frame.copy()
@@ -451,8 +463,31 @@ def _aggregate_dashboard(frame: pd.DataFrame, frequency: str, flow_columns: List
     return result.groupby("period", as_index=False)[available].sum(min_count=1)
 
 
+def _aggregate_monsoon(frame: pd.DataFrame, frequency: str) -> pd.DataFrame:
+    """Keep the rainfall daily mean as a mean when grouping reporting months."""
+    if frame.empty or frequency == "monthly":
+        return frame.copy()
+    grouped = _aggregate_dashboard(frame, frequency, ["rain_days_over25mm"])
+    averages = _aggregate_dashboard(frame, frequency, ["rain_mm"])
+    counts = _aggregate_dashboard(frame.assign(_count=frame["rain_mm"].notna().astype(int)), frequency, ["_count"])
+    grouped = grouped.merge(averages, on="period", how="outer").merge(counts, on="period", how="outer")
+    grouped["rain_mm"] = grouped["rain_mm"] / grouped["_count"].replace(0, float("nan"))
+    return grouped.drop(columns="_count")
+
+
 def _latest_npp_stock_snapshot() -> Dict[str, Any]:
     """Read the last validated NPP stock-cover snapshot without forcing a network call."""
+    derived = INDIA_COAL_CANONICAL_DIR / "npp_station_stock_cover_latest.csv"
+    if derived.exists():
+        frame = pd.read_csv(derived)
+        if not frame.empty and {"date", "band", "station_count"}.issubset(frame.columns):
+            observed = str(frame["date"].max())
+            rows = [{"period": observed, "stock_cover_band": str(row.band),
+                     "station_count": int(row.station_count), "status": "derived from official report"}
+                    for row in frame.loc[frame.date == observed].itertuples()]
+            return {"date": observed, "rows": rows, "status": "derived from official report",
+                    "source_url": NPP_PUBLISHED_REPORTS_URL, "retrieved_at": None,
+                    "limitation": "Days of cover = each station's reported stock divided by its daily requirement at 85% PLF; calculated bands, not NPP dashboard bands."}
     try:
         if not NPP_CACHE_PATH.exists():
             raise FileNotFoundError
@@ -514,6 +549,15 @@ def _coal_dashboard_payload(
     if not re.fullmatch(period_pattern, start) or not re.fullmatch(period_pattern, end) or start > end:
         raise HTTPException(400, "Use a valid From/To reporting range")
 
+    requested_start, requested_end = start, end
+    fiscal_labels = frequency == "financial_year" and all(
+        int(period[-2:]) == (int(period[:4]) + 1) % 100 for period in (start, end)
+    )
+    if fiscal_labels:
+        start, end = f"{start[:4]}-04", f"{int(end[:4]) + 1}-03"
+    elif not all(1 <= int(period[-2:]) <= 12 for period in (start, end)):
+        raise HTTPException(400, "Month must be between 01 and 12")
+
     coal_all = _canonical_frame("coal_monthly_official.csv")
     power_all = _canonical_frame("india_power_generation_monthly.csv")
     try:
@@ -521,8 +565,25 @@ def _coal_dashboard_payload(
     except FileNotFoundError:
         mix_all = _canonical_frame("india_power_mix_june.csv")
     imports_all = _canonical_frame("coal_imports_monthly.csv")
+    # The sole FY2026-27 import record is April–June cumulative, not June.
+    import_basis = imports_all["reporting_basis"].fillna("monthly") if "reporting_basis" in imports_all else pd.Series("monthly", index=imports_all.index)
+    imports_ytd = imports_all.loc[import_basis == "financial_year_to_date"].copy()
+    imports_all = imports_all.loc[import_basis != "financial_year_to_date"].copy()
     annual_all = _canonical_frame("coal_india_annual.csv")
     station_stock = _latest_npp_stock_snapshot()
+    npp_daily_coal = _canonical_frame("npp_daily_coal_national.csv")
+    monsoon_all = _canonical_frame("npp_monsoon_india_monthly.csv").rename(columns={"month": "period"})
+    if not npp_daily_coal.empty and "date" in npp_daily_coal:
+        npp_daily_coal["period"] = pd.to_datetime(npp_daily_coal["date"], errors="coerce").dt.to_period("M").astype(str)
+        npp_daily_coal = npp_daily_coal.dropna(subset=["period"])
+        npp_stock_monthly = npp_daily_coal.sort_values("date").groupby("period", as_index=False).agg(
+            coal_stock_000t=("coal_stock_000t", "last"),
+            coal_cons_000t=("coal_cons_000t", "sum"),
+            coal_receipt_000t=("coal_receipt_000t", "sum"),
+            n_plants=("n_plants", "last"),
+        )
+    else:
+        npp_stock_monthly = pd.DataFrame()
     quality = _dashboard_quality()
     sources = {
         "coal": {"title": "Ministry of Coal — Monthly Statistics at a Glance", "url": "https://coal.gov.in/public-information/monthly-statistics-at-glance"},
@@ -531,6 +592,7 @@ def _coal_dashboard_payload(
         "directory": {"title": "Coal Directory 2024-25", "url": "https://coal.gov.in/major-statistics/coal-statistics"},
         "imports_latest": {"title": "Ministry of Coal — Production and Supplies (DDG import totals)", "url": "https://coal.gov.in/major-statistics/production-and-supplies"},
         "imports_quarterly": {"title": "Ministry of Coal — Quarterly Booklet, Q4 FY2025-26 (Table 33)", "url": "https://coal.gov.in/sites/default/files/2025-09/29-06-2026a-qety.pdf"},
+        "monsoon": {"title": "Open-Meteo ERA5 reanalysis — supplied 14-location rainfall series", "url": "https://open-meteo.com/en/docs/historical-weather-api"},
     }
 
     if tab in {"overview", "supply", "table"}:
@@ -594,8 +656,12 @@ def _coal_dashboard_payload(
                     {"key": "solar_generation_gwh", "label": "Solar", "color": "#e4a72e"},
                     {"key": "other_renewables_total_gwh", "label": "Other renewables", "color": "#54a66f"},
                 ]},
-                {"id": "overview-station-stock", "title": "Latest station stock-cover distribution", "subtitle": "NPP-reported station counts by cover band; this is separate from pit-head tonnes", "x_label": "Stock-cover band", "y_label": "Stations", "type": "column", "rows": station_stock["rows"], "series": [
+                {"id": "overview-station-stock", "title": "Latest station stock-cover distribution", "subtitle": f"NPP observation {station_stock.get('date') or 'date unavailable'}; station counts by cover band, separate from pit-head tonnes", "x_label": "Stock-cover band", "y_label": "Stations", "type": "column", "rows": station_stock["rows"], "series": [
                     {"key": "station_count", "label": "Stations", "color": "#2f8f56"},
+                ]},
+                {"id": "overview-monsoon", "title": "Monsoon rainfall and wet days", "subtitle": "Supplied Open-Meteo reanalysis: mean daily rainfall across 14 locations and days with at least 2.5 mm; September 2026 is partial", "x_label": "Reporting period", "y_label": "Daily mean (mm) / days", "type": "line", "rows": _json_records(_aggregate_monsoon(_filter_months(monsoon_all, start, end), frequency)), "series": [
+                    {"key": "rain_mm", "label": "Mean daily rainfall (mm)", "color": "#2878b5"},
+                    {"key": "rain_days_over25mm", "label": "Days ≥2.5 mm", "color": "#2f8f56"},
                 ]},
             ]
         latest = frame.dropna(subset=["production_mt"]).iloc[-1].to_dict() if not frame.dropna(subset=["production_mt"]).empty else {}
@@ -606,16 +672,23 @@ def _coal_dashboard_payload(
             {"label": "Periods returned", "value": len(frame), "unit": "", "detail": f"{start} to {end}"},
             {"label": "Latest official month", "value": None, "display": str(coal_all.period.max()) if not coal_all.empty else "—", "unit": "", "detail": "Latest loaded Ministry bulletin"},
         ]
+        if tab == "supply" and not npp_daily_coal.empty:
+            latest_fuel = npp_daily_coal.sort_values("date").iloc[-1]
+            kpis.extend([
+                {"label": "Station coal consumption", "value": latest_fuel.coal_cons_000t, "unit": "000 t/day", "detail": str(latest_fuel.date)},
+                {"label": "Station coal receipts", "value": latest_fuel.coal_receipt_000t, "unit": "000 t/day", "detail": str(latest_fuel.date)},
+            ])
         if tab == "overview" and not mix_frame.empty:
             power_latest = mix_frame.dropna(subset=["coal_share_pct"]).iloc[-1]
+            conventional_latest = power_all.dropna(subset=["coal_generation_gwh"]).sort_values("period").iloc[-1]
             kpis[2] = {"label": "Coal share of all generation", "value": power_latest["coal_share_pct"], "unit": "%", "detail": f"Coal ÷ all-source total · {power_latest['period']}"}
             kpis.extend([
-                {"label": "Coal-fired generation", "value": power_latest.get("coal_generation_gwh"), "unit": "GWh", "detail": power_latest.get("period", "—")},
+                {"label": "Coal-fired generation", "value": conventional_latest.get("coal_generation_gwh"), "unit": "GWh", "detail": conventional_latest.get("period", "—")},
                 {"label": "Latest coal imports", "value": imports_all.dropna(subset=["total_coal_mt"]).iloc[-1]["total_coal_mt"] if "total_coal_mt" in imports_all and not imports_all.dropna(subset=["total_coal_mt"]).empty else None, "unit": "MT", "detail": f"Latest monthly customs total · {imports_all.period.max()}"},
                 {"label": "Pit-head closing stock", "value": annual_all.dropna(subset=["closing_stock_mt"]).iloc[-1]["closing_stock_mt"] if "closing_stock_mt" in annual_all and not annual_all.dropna(subset=["closing_stock_mt"]).empty else None, "unit": "MT", "detail": "Latest annual reported inventory"},
                 {"label": "Station stock cover", "value": sum(float(row.get("station_count") or 0) for row in station_stock["rows"]), "unit": "stations", "detail": f"NPP observation {station_stock.get('date') or 'unavailable'}"},
             ])
-        tab_sources = [sources["coal"], sources["power"], sources["renewable"]] if tab == "overview" else [sources["coal"]]
+        tab_sources = [sources["coal"], sources["power"], sources["renewable"], sources["monsoon"]] if tab == "overview" else [sources["coal"]]
         availability = {"start": str(coal_all.period.min()), "end": str(coal_all.period.max()), "grain": "monthly", "status": "provisional"}
     elif tab == "power":
         frame = _filter_months(power_all, start, end)
@@ -664,21 +737,25 @@ def _coal_dashboard_payload(
                 {"key": "solar_generation_gwh", "label": "Solar", "color": "#e4a72e"},
                 {"key": "other_renewables_total_gwh", "label": "Other renewables", "color": "#54a66f"},
             ]},
-            {"id": "power-share", "title": "All-source generation shares", "subtitle": "Coal and renewable shares use total generation as the denominator; renewables include large hydro", "x_label": "Reporting period", "y_label": "Share (%)", "type": "line", "rows": _json_records(mix_frame), "series": [
-                {"key": "coal_share_pct", "label": "Coal share", "color": "#db2f34"},
-                {"key": "renewables_share_pct", "label": "Renewables incl. large hydro", "color": "#2f8f56"},
-                {"key": "solar_share_pct", "label": "Solar share", "color": "#e4a72e"},
+            {"id": "power-share", "title": "Coal share of conventional generation", "subtitle": "Latest NPP conventional share through the newest available report; the separate all-source mix remains limited by CEA renewable-release coverage", "x_label": "Reporting period", "y_label": "Share (%)", "type": "line", "rows": _json_records(frame), "series": [
+                {"key": "coal_share_conventional_pct", "label": "Coal share", "color": "#db2f34"},
             ]},
         ]
-        latest = mix_frame.iloc[-1].to_dict() if not mix_frame.empty else {}
+        latest = frame.iloc[-1].to_dict() if not frame.empty else {}
         kpis = [
             {"label": "Coal generation", "value": latest.get("coal_generation_gwh"), "unit": "GWh", "detail": latest.get("period", "—")},
-            {"label": "Coal share of all generation", "value": latest.get("coal_share_pct"), "unit": "%", "detail": "All-source denominator"},
-            {"label": "Renewables incl. large hydro", "value": latest.get("renewables_share_pct"), "unit": "%", "detail": latest.get("period", "—")},
-            {"label": "Solar generation", "value": latest.get("solar_generation_gwh"), "unit": "GWh", "detail": latest.get("period", "—")},
+            {"label": "Coal share of conventional generation", "value": latest.get("coal_share_conventional_pct"), "unit": "%", "detail": "NPP conventional denominator"},
+            {"label": "All-source mix latest", "value": mix_frame.iloc[-1].get("period") if not mix_frame.empty else None, "unit": "", "display": mix_frame.iloc[-1].get("period", "Unavailable") if not mix_frame.empty else "Unavailable", "detail": "CEA renewable mix coverage"},
+            {"label": "Solar generation", "value": latest.get("solar_generation_gwh"), "unit": "GWh", "detail": "Available where CEA mix overlaps"},
         ]
+        dgr_daily = _canonical_frame("npp_daily_generation_dgr1.csv")
+        dgr_daily = dgr_daily.loc[(dgr_daily.region == "ALL INDIA") & (dgr_daily.category == "THERMAL")].sort_values("date") if not dgr_daily.empty else dgr_daily
+        if not dgr_daily.empty:
+            last_dgr = dgr_daily.iloc[-1]
+            kpis.append({"label": "Latest thermal generation", "value": last_dgr.today_actual_mu,
+                         "unit": "GWh/day", "detail": f"NPP DGR1 · {last_dgr.date}"})
         tab_sources = [sources["power"], sources["renewable"]]
-        availability = {"start": str(mix_all.period.min()), "end": str(mix_all.period.max()), "grain": "monthly", "status": "official reported", "limitation": "NPP provides the conventional series; CEA Monthly Renewable Generation supplies wind, solar, biomass, bagasse, small hydro and other renewables."}
+        availability = {"start": str(power_all.period.min()), "end": str(power_all.period.max()), "grain": frequency, "status": "NPP conventional current; CEA mix coverage separate", "limitation": "NPP conventional generation is used through the latest available report. The all-source renewable mix is only shown through the latest validated CEA renewable release and is not extended with invented values."}
     elif tab == "trade":
         monthly = _filter_months(imports_all, start, end)
         if frequency == "financial_year":
@@ -691,7 +768,7 @@ def _coal_dashboard_payload(
                 "non_coking_imports_mt": "non_coking_coal_mt",
                 "total_imports_mt": "total_coal_mt",
             })
-            frame = frame.loc[(frame["period"] >= "2021-22") & (frame["period"] <= "2025-26")]
+            frame = _filter_coal_financial_years(frame, start, end)
         else:
             frame = _aggregate_dashboard(
                 monthly, frequency,
@@ -701,52 +778,89 @@ def _coal_dashboard_payload(
             "period", "coking_imports_mt", "non_coking_imports_mt",
             "total_imports_mt", "imports_yoy_pct", "status",
         ] if column in annual_all.columns]].copy()
-        annual_imports = annual_imports.loc[annual_imports["period"] >= "2015-16"]
+        annual_imports = _filter_coal_financial_years(annual_imports, start, end)
         charts = [
-            {"id": "trade-volume", "title": "Monthly coal imports by coal type", "subtitle": "FY2024-25 final; FY2025-26 and April 2026 provisional. Values come from official DGCI&S/DDG tables and no missing month is interpolated.", "x_label": "Reporting period", "y_label": "Import quantity (MT)", "type": "column", "rows": _json_records(monthly), "series": [
+            {"id": "trade-volume", "title": "Monthly coal imports by coal type" if frequency == "monthly" else "Coal imports by coal type", "subtitle": "Official DGCI&S/DDG observations, aggregated at the selected frequency. Missing months remain unavailable; partial periods include only reported months.", "x_label": "Reporting period", "y_label": "Import quantity (MT)", "type": "column", "rows": _json_records(frame), "series": [
                 {"key": "coking_coal_mt", "label": "Coking coal", "color": "#8c2e3d"},
                 {"key": "non_coking_coal_mt", "label": "Non-coking coal", "color": "#d8902f"},
             ]},
-            {"id": "trade-annual", "title": "Annual coal imports and change", "subtitle": "Official financial-year totals through FY2025-26. Monthly rounded components can differ from the published annual total by 0.01 MT.", "x_label": "Financial year", "y_label": "Import quantity (MT)", "type": "column", "rows": _json_records(annual_imports), "series": [
+            {"id": "trade-annual", "title": "Annual coal imports and change", "subtitle": "Official financial-year totals through FY2025-26; monthly rounded components can differ from the published annual total by 0.01 MT.", "x_label": "Financial year", "y_label": "Import quantity (MT)", "type": "column", "rows": _json_records(annual_imports), "series": [
                 {"key": "coking_imports_mt", "label": "Coking coal", "color": "#8c2e3d"},
                 {"key": "non_coking_imports_mt", "label": "Non-coking coal", "color": "#d8902f"},
             ]},
         ]
-        latest = imports_all.sort_values("period").iloc[-1].to_dict() if not imports_all.empty else {}
-        latest_annual = annual_all.sort_values("period").iloc[-1].to_dict() if not annual_all.empty else {}
+        latest = frame.sort_values("period").iloc[-1].to_dict() if not frame.empty else {}
+        annual_selected = _filter_coal_financial_years(annual_all, start, end)
+        latest_annual = annual_selected.sort_values("period").iloc[-1].to_dict() if not annual_selected.empty else {}
         kpis = [
             {"label": "Latest imports", "value": latest.get("total_coal_mt"), "unit": "MT", "detail": latest.get("period", "No rows in range")},
             {"label": "Coking coal", "value": latest.get("coking_coal_mt"), "unit": "MT", "detail": latest.get("period", "—")},
             {"label": "Non-coking coal", "value": latest.get("non_coking_coal_mt"), "unit": "MT", "detail": latest.get("period", "—")},
-            {"label": "FY2025-26 imports", "value": latest_annual.get("total_imports_mt"), "unit": "MT", "detail": "Published annual total"},
+            {"label": "Annual imports", "value": latest_annual.get("total_imports_mt"), "unit": "MT", "detail": latest_annual.get("period", "No rows in range")},
         ]
         tab_sources = [sources["imports_latest"], sources["imports_quarterly"], sources["directory"]]
-        availability = {"start": str(imports_all.period.min()), "end": str(imports_all.period.max()), "grain": "monthly", "status": "final through 2025-03; provisional thereafter", "limitation": "Country and Indian-port breakdowns remain at FY2024-25, their latest loaded official granular release. Customs reporting country is not presented as physical mine origin."}
+        if not imports_ytd.empty:
+            ytd = imports_ytd.sort_values("period").iloc[-1]
+            kpis.append({"label": "FY-to-date imports", "value": ytd.get("total_coal_mt"), "unit": "MT", "detail": f"Apr–Jun FY2026-27 cumulative · {ytd['period']}"})
+        availability = {"start": str(imports_all.period.min()), "end": str(imports_all.period.max()), "grain": "monthly", "status": "monthly through FY2025-26; FY2026-27 cumulative separately", "limitation": "The later Ministry release reports Apr-Jun FY2026-27 imports cumulatively (61.89 MT), not as separate monthly observations. Country and Indian-port breakdowns remain at FY2024-25, their latest loaded official granular release."}
     else:  # stocks
-        frame = annual_all[[column for column in ["period", "closing_stock_mt", "offtake_mt", "production_mt", "status"] if column in annual_all.columns]].copy()
+        # Stocks are two distinct official measures.  NPP provides the latest
+        # station stock-cover distribution; the Ministry provides annual
+        # pit-head closing tonnes.  For monthly/quarterly views, show the
+        # comparable production and dispatch flow around the current stock
+        # snapshot instead of pretending annual pit-head tonnes are monthly.
+        if frequency in {"monthly", "quarterly"}:
+            flow = _aggregate_dashboard(_filter_months(coal_all, start, end), frequency, ["production_mt", "dispatch_mt", "status"])
+            flow = flow.rename(columns={"dispatch_mt": "offtake_mt"})
+            frame = flow
+        else:
+            frame = annual_all[[column for column in ["period", "closing_stock_mt", "offtake_mt", "production_mt", "status"] if column in annual_all.columns]].copy()
+            frame = _filter_coal_financial_years(frame, start, end)
         charts = [
-            {"id": "stock-level", "title": "Pit-head closing stock", "subtitle": "Annual inventory at coal producers; not power-station stock-cover days", "x_label": "Financial year", "y_label": "Closing stock (MT)", "type": "column", "series": [
+            {"id": "stock-level", "title": "Pit-head closing stock", "subtitle": "Annual producer inventory only; monthly and quarterly pit-head stock observations are not published in this snapshot", "x_label": "Financial year", "y_label": "Closing stock (MT)", "type": "column", "rows": _json_records(annual_all), "series": [
                 {"key": "closing_stock_mt", "label": "Pit-head stock", "color": "#d8902f"},
             ]},
-            {"id": "stock-flow", "title": "Production and off-take", "subtitle": "Annual supply-chain context", "x_label": "Financial year", "y_label": "Million tonnes (MT)", "type": "line", "series": [
+            {"id": "stock-flow", "title": "Production and dispatch around the stock snapshot", "subtitle": "Monthly or quarterly official flows selected above; use the comparison selector for prior-period or prior-year context", "x_label": "Reporting period", "y_label": "Million tonnes (MT)", "type": "line", "rows": _json_records(frame), "series": [
                 {"key": "production_mt", "label": "Production", "color": "#003671"},
                 {"key": "offtake_mt", "label": "Off-take", "color": "#2e6d92"},
             ]},
-            {"id": "station-stock-cover", "title": "Station stock-cover bands", "subtitle": "Latest NPP observation; counts are not pit-head tonnes", "x_label": "Stock-cover band", "y_label": "Stations", "type": "column", "rows": station_stock["rows"], "series": [
+            {"id": "station-stock-cover", "title": "Latest station stock-cover distribution", "subtitle": f"NPP observation {station_stock.get('date') or 'date unavailable'}; counts are separate from the daily national stock-tonne series", "x_label": "Stock-cover band", "y_label": "Stations", "type": "column", "rows": station_stock["rows"], "series": [
                 {"key": "station_count", "label": "Stations", "color": "#2f8f56"},
             ]},
         ]
         latest = frame.iloc[-1].to_dict() if not frame.empty else {}
-        latest_stock_frame = frame.dropna(subset=["closing_stock_mt"]) if "closing_stock_mt" in frame else pd.DataFrame()
+        latest_stock_frame = annual_all.dropna(subset=["closing_stock_mt"]) if "closing_stock_mt" in annual_all else pd.DataFrame()
         latest_stock = latest_stock_frame.iloc[-1].to_dict() if not latest_stock_frame.empty else {}
+        latest_npp = npp_daily_coal.sort_values("date").iloc[-1].to_dict() if not npp_daily_coal.empty else {}
         kpis = [
+            {"label": "Latest power-station stock", "value": latest_npp.get("coal_stock_000t"), "unit": "000 t", "detail": latest_npp.get("date", "—")},
+            {"label": "Daily coal receipts", "value": latest_npp.get("coal_receipt_000t"), "unit": "000 t", "detail": latest_npp.get("date", "—")},
+            {"label": "Daily coal consumption", "value": latest_npp.get("coal_cons_000t"), "unit": "000 t", "detail": latest_npp.get("date", "—")},
             {"label": "Pit-head closing stock", "value": latest_stock.get("closing_stock_mt"), "unit": "MT", "detail": latest_stock.get("period", "—")},
-            {"label": "Annual off-take", "value": latest.get("offtake_mt"), "unit": "MT", "detail": latest.get("period", "—")},
-            {"label": "Annual production", "value": latest.get("production_mt"), "unit": "MT", "detail": latest.get("period", "—")},
             {"label": "Station stock cover", "value": sum(float(row.get("station_count") or 0) for row in station_stock["rows"]) if station_stock["rows"] else None, "display": None if station_stock["rows"] else "Unavailable", "unit": "stations", "detail": f"NPP observation {station_stock.get('date') or 'unavailable'}"},
         ]
         tab_sources = [sources["directory"]]
-        availability = {"start": str(frame.period.min()), "end": str(frame.period.max()), "grain": "financial year", "status": "final"}
+        availability = {"start": str(npp_stock_monthly.period.min()) if not npp_stock_monthly.empty else (str(frame.period.min()) if not frame.empty else None), "end": str(npp_stock_monthly.period.max()) if not npp_stock_monthly.empty else (str(frame.period.max()) if not frame.empty else None), "grain": frequency, "status": "NPP daily stock master plus Ministry flows", "limitation": "The supplied NPP daily national coal master provides month-end stock through its latest date. Station stock cover is a latest dated distribution. Ministry pit-head closing tonnes remain annual and are shown separately."}
+
+    if tab == "overview":
+        # Keep overview chart rows in the same payload used by workbook exports.
+        trade = _coal_dashboard_payload("trade", requested_start, requested_end, frequency, "all", comparison)
+        stocks = _coal_dashboard_payload("stocks", requested_start, requested_end, frequency, "all", comparison)
+        imports_chart = dict(next(item for item in trade["charts"] if item["id"] == "trade-volume"))
+        imports_chart.update(id="overview-imports", type="stacked_column")
+        pit_chart = dict(next(item for item in stocks["charts"] if item["id"] == "stock-level"))
+        pit_chart.update(id="overview-pit-head", rows=pit_chart.get("rows") or stocks["rows"])
+        charts.insert(1, imports_chart)
+        charts.append(pit_chart)
+        replacement = {
+            "Latest coal imports": next(item for item in trade["kpis"] if item["label"] == "Latest imports"),
+            "Pit-head closing stock": next(item for item in stocks["kpis"] if item["label"] == "Pit-head closing stock"),
+            "Station stock cover": next(item for item in stocks["kpis"] if item["label"] == "Station stock cover"),
+        }
+        for label, item in replacement.items():
+            kpis = [entry for entry in kpis if entry["label"] != label]
+            kpis.append({**item, "label": label})
+        tab_sources = list({item["url"]: item for item in tab_sources + trade["sources"] + stocks["sources"]}.values())
 
     focus_options = {
         "overview": [("all", "All measures"), ("coal", "Coal"), ("renewables", "Renewables"), ("solar", "Solar"), ("hydro", "Large hydro")],
@@ -794,10 +908,11 @@ def _coal_dashboard_payload(
 
     coverage_by_dataset = {
         "production": {"start": str(coal_all.period.min()), "end": str(coal_all.period.max()), "latest_observation": str(coal_all.period.max()), "status": "provisional", "limitation": "Monthly Ministry bulletin series."},
-        "imports": {"start": str(imports_all.period.min()), "end": str(imports_all.period.max()), "latest_observation": str(imports_all.period.max()), "status": "provisional", "limitation": "Latest validated monthly customs total."},
+        "imports": {"start": str(imports_all.period.min()), "end": str(imports_all.period.max()), "latest_observation": str(imports_all.period.max()), "status": "provisional monthly; later FY2026-27 figure is cumulative", "limitation": "Latest comparable monthly customs total. The 61.89 MT Apr–Jun 2026 cumulative release is shown separately, not plotted as June monthly trade."},
         "use": {"start": str(power_all.period.min()), "end": str(power_all.period.max()), "latest_observation": str(power_all.period.max()), "status": "official reported", "limitation": "Coal generation and dispatch measure different parts of use."},
         "pit_head_stocks": {"start": str(annual_all.period.min()), "end": str(annual_all.period.max()), "latest_observation": str(annual_all.dropna(subset=['closing_stock_mt']).period.max()) if 'closing_stock_mt' in annual_all and not annual_all.dropna(subset=['closing_stock_mt']).empty else None, "status": "final", "limitation": "Annual producer inventory; FY2025-26 is not yet reported."},
         "station_stocks": {"start": station_stock.get("date"), "end": station_stock.get("date"), "latest_observation": station_stock.get("date"), "status": station_stock.get("status"), "limitation": station_stock.get("limitation")},
+        "monsoon": {"start": str(monsoon_all.period.min()) if not monsoon_all.empty else None, "end": str(monsoon_all.period.max()) if not monsoon_all.empty else None, "latest_observation": str(monsoon_all.period.max()) if not monsoon_all.empty else None, "status": "derived ERA5 reanalysis", "limitation": "An arithmetic mean of 14 locations, not an area-weighted India total. September 2026 is partial through the 27th; rainfall does not by itself predict coal or port disruption."},
     }
     provenance = {
         "production_mt": {**sources["coal"], "retrieved_at": quality.get("generated_at")},
@@ -806,11 +921,55 @@ def _coal_dashboard_payload(
         "imports": {**sources["imports_latest"], "retrieved_at": quality.get("generated_at")},
         "pit_head_closing_stock_mt": {**sources["directory"], "retrieved_at": quality.get("generated_at")},
         "station_stock_cover": {"title": "National Power Portal — Coal stock availability", "url": station_stock.get("source_url"), "retrieved_at": station_stock.get("retrieved_at"), "status": station_stock.get("status")},
+        "monsoon": {**sources["monsoon"], "retrieved_at": None, "status": "derived ERA5 reanalysis from supplied archive"},
     }
+    # Later supplied NPP daily reports measure power-station fuel and thermal
+    # generation. They extend these tabs, never the Ministry production/imports.
+    canonical = INDIA_COAL_CANONICAL_DIR
+    npp_metrics = {
+        "overview": ("station_stock", "station_consumption", "thermal_generation_daily"),
+        "supply": ("station_consumption", "station_receipts"),
+        "power": ("thermal_generation_daily",),
+        "stocks": ("station_stock", "station_consumption", "station_receipts"),
+        "table": ("imports", "coal_generation", "station_stock", "station_consumption", "station_receipts", "thermal_generation_daily", "rainfall"),
+    }.get(tab, ())
+    for metric in npp_metrics:
+        label, unit, _, _, source, url = COAL_COMPARE_CATALOG[metric]
+        observations = coal_metric_monthly(canonical, metric)
+        observations = _filter_months(observations, start, end)
+        if not observations.empty:
+            observed = observations.copy()
+            if frequency != "monthly":
+                dates = pd.to_datetime(observed.period + "-01")
+                observed["period"] = (dates.dt.to_period("Q").astype(str) if frequency == "quarterly" else
+                    (dates.dt.year.where(dates.dt.month >= 4, dates.dt.year - 1).astype(str) + "-" +
+                     (dates.dt.year.where(dates.dt.month >= 4, dates.dt.year - 1) + 1).astype(str).str[-2:]))
+                grouped = observed.groupby("period", sort=True)
+                if metric == "station_stock":
+                    observed = grouped.last().reset_index()
+                elif metric == "rainfall":
+                    observed = grouped.agg(value=("value", "mean"), observed_days=("observed_days", "sum"), last_observation=("last_observation", "max")).reset_index()
+                else:
+                    observed = grouped.agg(value=("value", "sum"), observed_days=("observed_days", "sum"), last_observation=("last_observation", "max")).reset_index()
+            if tab == "table":
+                frame = frame.merge(observed[["period", "value"]].rename(columns={"value": metric}),
+                                    on="period", how="outer").sort_values("period")
+            else:
+                charts.append({"id": "npp-" + metric, "title": label,
+                    "subtitle": source + "; latest reporting period may be incomplete. Observed days are in the exact-data table.",
+                    "x_label": "Reporting period", "y_label": unit, "type": "line", "rows": _json_records(observed),
+                    "series": [{"key": "value", "label": label, "color": "#227f91"}]})
+            coverage_by_dataset[metric] = {"start": str(observations.period.min()), "end": str(observations.period.max()),
+                "latest_observation": str(observations.iloc[-1].get("last_observation") or observations.period.max()),
+                "status": "NPP reported; latest month partial", "limitation": f"{source}. Daily totals sum only observed days; station stock is last observed day."}
+            provenance[metric] = {"title": source, "url": url, "status": "NPP reported"}
+    if npp_metrics and any(metric in coverage_by_dataset for metric in npp_metrics):
+        availability["end"] = max(str(availability["end"]), *(coverage_by_dataset[metric]["end"] for metric in npp_metrics if metric in coverage_by_dataset))
+        availability["limitation"] = (availability.get("limitation", "") + " Source families end in different months; see coverage by dataset. October NPP flow totals are partial through the latest daily report.").strip()
     trend_source = frame if tab != "trade" else _aggregate_dashboard(_filter_months(imports_all, start, end), frequency, ["coking_coal_mt", "non_coking_coal_mt", "total_coal_mt"])
     trend_summary = [_series_trend(trend_source, key, "MT") for key in ("production_mt", "dispatch_mt", "total_coal_mt") if key in trend_source]
     return {
-        "tab": tab, "frequency": frequency, "filters": {"from": start, "to": end},
+        "tab": tab, "frequency": frequency, "filters": {"from": requested_start, "to": requested_end},
         "focus": focus, "comparison": comparison,
         "focus_options": [{"id": item[0], "label": item[1]} for item in focus_options[tab]],
         "available_range": availability, "kpis": kpis, "charts": charts,
@@ -3255,12 +3414,37 @@ async def port_detail(port_id: str):
 
 
 def _run_coal_refresh() -> Dict[str, Any]:
-    """Run the validated official refresh script and return a compact result."""
-    script = BASE_DIR / "scripts" / "refresh_coal_workspace_latest.py"
-    if not script.exists():
-        return {"ok": False, "error": "Coal refresh script is unavailable."}
-    completed = subprocess.run([sys.executable, str(script)], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=180)
-    return {"ok": completed.returncode == 0, "updated_datasets": ["coal imports", "annual coal snapshot"] if completed.returncode == 0 else [], "output": (completed.stdout or completed.stderr)[-4000:]}
+    """Refresh Ministry and NPP source families without replacing good data on failure."""
+    updated, stale, details = [], [], {}
+    for family, filename, timeout in (
+        ("Ministry of Coal", "refresh_coal_workspace_latest.py", 180),
+        ("NPP daily fuel and generation", "update_npp_daily.py", 120),
+    ):
+        script = BASE_DIR / "scripts" / filename
+        if not script.exists():
+            stale.append(family)
+            details[family] = "Refresh script unavailable"
+            continue
+        try:
+            completed = subprocess.run([sys.executable, str(script)], cwd=str(BASE_DIR), capture_output=True, text=True, timeout=timeout)
+            if completed.returncode:
+                stale.append(family)
+                details[family] = (completed.stderr or completed.stdout)[-500:]
+                continue
+            updated.append(family)
+            if family.startswith("NPP"):
+                report = json.loads(completed.stdout)
+                details[family] = {"fuel_added": report.get("fuel_added", 0),
+                                   "generation_rows_added": report.get("generation_rows_added", 0),
+                                   "failures": report.get("failures", [])}
+                if report.get("failures"):
+                    stale.append(family + " (some report dates unavailable)")
+            else:
+                details[family] = "Refresh completed"
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            stale.append(family)
+            details[family] = str(exc)[:500]
+    return {"ok": bool(updated), "updated_datasets": updated, "stale_datasets": stale, "details": details}
 
 
 @app.post("/api/coal/refresh")
@@ -3268,7 +3452,7 @@ async def coal_refresh():
     result = await asyncio.to_thread(_run_coal_refresh)
     if not result.get("ok"):
         raise HTTPException(502, detail={"message": "Official refresh failed; last validated snapshot retained.", **result})
-    return {**result, "latest": _dashboard_quality(), "stale_datasets": []}
+    return {**result, "latest": _dashboard_quality()}
 
 
 @app.get("/api/coal/summary")
@@ -3505,21 +3689,102 @@ async def coal_analysis():
     return _india_coal_analysis()
 
 
+@app.get("/api/coal/master/coverage")
+def coal_master_coverage():
+    """Authenticated inventory of the local, validated NPP master database."""
+    database = DATA_DIR / "india_coal_master" / "npp_master.duckdb"
+    if not database.is_file():
+        raise HTTPException(503, "NPP master database has not been built on this server.")
+    with duckdb.connect(str(database), read_only=True) as connection:
+        sources = connection.execute(
+            "SELECT table_name, file_name, reliability, grain, rows, first_period, last_period "
+            "FROM source_files ORDER BY table_name"
+        ).fetchall()
+        checks = connection.execute(
+            "SELECT check_name, severity, failed_rows, explanation "
+            "FROM quality_checks ORDER BY check_name"
+        ).fetchall()
+        archived = connection.execute("SELECT section, format, COUNT(*) AS files FROM archive_files GROUP BY 1, 2 ORDER BY 1, 2").fetchall()
+    return {
+        "datasets": [dict(zip(("table", "source_file", "reliability", "grain", "rows", "first_period", "last_period"), row)) for row in sources],
+        "quality_checks": [dict(zip(("check", "severity", "failed_rows", "explanation"), row)) for row in checks],
+        "archive_inventory": [dict(zip(("section", "format", "files"), row)) for row in archived],
+    }
+
+
 @app.get("/api/coal/dashboard/periods")
 def coal_dashboard_periods():
     periods = set()
     for filename in ("coal_monthly_official.csv", "india_power_generation_monthly.csv", "india_power_mix_monthly.csv", "coal_imports_monthly.csv"):
         frame = _canonical_frame(filename)
         periods.update(p for p in frame["period"].astype(str) if re.fullmatch(r"\d{4}-(?:0[1-9]|1[0-2])", p))
-    annual = _canonical_frame("coal_india_annual.csv")["period"].astype(str).tolist()
+    for metric in ("station_stock", "thermal_generation_daily"):
+        periods.update(coal_metric_monthly(INDIA_COAL_CANONICAL_DIR, metric).period.astype(str))
+    annual = set(_canonical_frame("coal_india_annual.csv")["period"].astype(str))
+    for period in periods:
+        year, month = map(int, period.split("-"))
+        fiscal_start = year if month >= 4 else year - 1
+        annual.add(f"{fiscal_start}-{str(fiscal_start + 1)[-2:]}")
+    annual = sorted(annual)
     return {"periods": sorted(periods), "annual_periods": annual, "annual_coverage": {"start": min(annual) if annual else None, "end": max(annual) if annual else None}}
+
+
+@app.get("/api/coal/comparison/catalog")
+def coal_comparison_catalog():
+    return {"metrics": coal_metric_catalog(INDIA_COAL_CANONICAL_DIR)}
+
+
+@app.get("/api/coal/comparison")
+def coal_comparison(
+    metrics: str = Query("production,station_consumption,thermal_generation_daily"),
+    start: str = Query("2023-05", pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    end: str = Query("2026-10", pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+):
+    try:
+        return compare_coal_metrics(INDIA_COAL_CANONICAL_DIR, metrics.split(","), start, end)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/coal/comparison/export")
+def export_coal_comparison(
+    metrics: str = Query("production,station_consumption,thermal_generation_daily"),
+    start: str = Query("2023-05", pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    end: str = Query("2026-10", pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    format: str = Query("xlsx", pattern="^(xlsx|csv)$"),
+):
+    payload = coal_comparison(metrics, start, end)
+    frame = pd.DataFrame(payload["rows"])
+    filename = f"india_coal_comparison_{start}_to_{end}"
+    if format == "csv":
+        return StreamingResponse(iter([frame.to_csv(index=False)]), media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}.csv"'})
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        frame.to_excel(writer, index=False, sheet_name="Monthly observations")
+        pd.DataFrame(payload["metrics"]).to_excel(writer, index=False, sheet_name="Sources and coverage")
+        from openpyxl.chart import LineChart, Reference
+        sheet = writer.sheets["Monthly observations"]
+        if payload["baseline_period"] and len(frame) > 1:
+            chart = LineChart()
+            chart.title = "Indexed comparison (first common month = 100)"
+            chart.y_axis.title = "Index"
+            for metric in payload["metrics"]:
+                column = list(frame.columns).index(metric["id"] + "_index") + 1
+                chart.add_data(Reference(sheet, min_col=column, min_row=1, max_row=len(frame) + 1), titles_from_data=True)
+            chart.set_categories(Reference(sheet, min_col=1, min_row=2, max_row=len(frame) + 1))
+            chart.width, chart.height = 22, 11
+            sheet.add_chart(chart, "A" + str(len(frame) + 4))
+    output.seek(0)
+    return StreamingResponse(iter([output.getvalue()]), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}.xlsx"'})
 
 
 @app.get("/api/coal/dashboard")
 async def coal_dashboard(
     tab: str = Query("overview"),
     start: str = Query("2023-05"),
-    end: str = Query("2026-06"),
+    end: str = Query("2026-08"),
     frequency: str = Query("monthly"),
     focus: str = Query("all"),
     comparison: str = Query("previous_period"),
@@ -3531,7 +3796,7 @@ async def coal_dashboard(
 async def export_coal_dashboard(
     tab: str = Query("overview"),
     start: str = Query("2023-05"),
-    end: str = Query("2026-06"),
+    end: str = Query("2026-08"),
     frequency: str = Query("monthly"),
     focus: str = Query("all"),
     comparison: str = Query("previous_period"),

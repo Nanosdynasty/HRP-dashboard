@@ -30,6 +30,7 @@ SHELL_ASSETS = {
     "/static/index.html", "/static/css/style.css", "/static/css/styles.css",
     "/static/css/voyage-activity.css",
     "/static/js/app.js", "/static/js/broker-tools.js", "/static/js/port-outlook.js",
+    "/static/js/coal-workspace.js", "/static/js/coal-enhancements.js", "/static/css/coal-workspace.css",
     "/static/js/intelligence-desk.js", "/static/js/voyage-activity.js",
     "/static/auth/access-v2.js",
 }

@@ -4,4 +4,7 @@ __pycache__/
 .venv/
 node_modules/
 .env
+*.duckdb
+*.duckdb.building
+data/india_coal_master/npp_master.manifest.json
 tmp/
